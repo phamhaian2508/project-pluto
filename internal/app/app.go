@@ -360,7 +360,17 @@ func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.Ch
 }
 
 func (app *App) Query(ctx context.Context, req *abci.QueryRequest) (*abci.QueryResponse, error) {
-	return &abci.QueryResponse{Code: 0}, nil
+	stateDB := evm.NewPebbleStateDB(app.db)
+	addr := common.BytesToAddress(req.Data)
+
+	switch req.Path {
+	case "balance":
+		return &abci.QueryResponse{Code: 0, Value: []byte(stateDB.GetBalance(addr).ToBig().String())}, nil
+	case "nonce":
+		return &abci.QueryResponse{Code: 0, Value: []byte(strconv.FormatUint(stateDB.GetNonce(addr), 10))}, nil
+	default:
+		return &abci.QueryResponse{Code: 1, Log: "unknown path: " + req.Path}, nil
+	}
 }
 
 func (app *App) Close() error {
