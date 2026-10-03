@@ -2,31 +2,55 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
-
-	"encoding/json"
 	"math/big"
-
-	abci "github.com/cometbft/cometbft/abci/types"
-	"github.com/huyCuong73/pluto/internal/evm"
-	"github.com/huyCuong73/pluto/internal/store"
 	"strconv"
 
-	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/params"
+	abci "github.com/cometbft/cometbft/abci/types"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/holiman/uint256"
+	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/params"
+	"github.com/huyCuong73/pluto/internal/evm"
+	"github.com/huyCuong73/pluto/internal/store"
 )
 
 const (
-	AppVersion uint64 = 1
+	AppVersion    uint64 = 1
+	blockGasLimit uint64 = 30000000
 )
 
 // Chain ID
 var chainID = big.NewInt(1)
+
+// newChainConfig: bật mọi EIP đến Shanghai từ block 0.
+// Chưa bật Cancun vì SelfDestruct (EIP-6780) trong state chưa làm đúng.
+func newChainConfig() *params.ChainConfig {
+	zero := big.NewInt(0)
+	shanghai := uint64(0)
+	return &params.ChainConfig{
+		ChainID:                 chainID,
+		HomesteadBlock:          zero,
+		EIP150Block:             zero,
+		EIP155Block:             zero,
+		EIP158Block:             zero,
+		ByzantiumBlock:          zero,
+		ConstantinopleBlock:     zero,
+		PetersburgBlock:         zero,
+		IstanbulBlock:           zero,
+		MuirGlacierBlock:        zero,
+		BerlinBlock:             zero,
+		LondonBlock:             zero,
+		ArrowGlacierBlock:       zero,
+		GrayGlacierBlock:        zero,
+		MergeNetsplitBlock:      zero,
+		TerminalTotalDifficulty: zero,
+		ShanghaiTime:            &shanghai,
+	}
+}
 
 type App struct {
 	abci.BaseApplication
@@ -166,132 +190,83 @@ func (app *App) ProcessProposal(_ context.Context, req *abci.ProcessProposalRequ
 	}, nil
 }
 
-// FinalizeBlock xử lý các tx trong block
+// FinalizeBlock xử lý các tx trong block (tuần tự)
 func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockRequest) (*abci.FinalizeBlockResponse, error) {
 	txResults := make([]*abci.ExecTxResult, len(req.Txs))
 
-	// Tạo StateDB mới cho block
+	// StateDB mới cho block
 	stateDB := evm.NewPebbleStateDB(app.db)
+	chainConfig := newChainConfig()
 
-	// Cấu hình Chain, kích hoạt toàn bộ EIP từ block 0
-	chainConfig := params.ChainConfig{
-		ChainID:             chainID,
-		HomesteadBlock:      big.NewInt(0),
-		DAOForkBlock:        big.NewInt(0),
-		DAOForkSupport:      true,
-		EIP150Block:         big.NewInt(0),
-		EIP155Block:         big.NewInt(0),
-		EIP158Block:         big.NewInt(0),
-		ByzantiumBlock:      big.NewInt(0),
-		ConstantinopleBlock: big.NewInt(0),
-		PetersburgBlock:     big.NewInt(0),
-		IstanbulBlock:       big.NewInt(0),
-		MuirGlacierBlock:    big.NewInt(0),
-		BerlinBlock:         big.NewInt(0),
-		LondonBlock:         big.NewInt(0),
-	}
-
-	// Block Context
 	blockContext := vm.BlockContext{
 		CanTransfer: core.CanTransfer,
 		Transfer:    core.Transfer,
-		GetHash:     func(n uint64) common.Hash { return common.Hash{} }, // TODO: Block hash cache
-		Coinbase:    common.Address{},                                     // TODO: Validator address
+		GetHash:     func(n uint64) common.Hash { return common.Hash{} }, // TODO: block hash cache
+		Coinbase:    common.Address{},                                     // TODO: validator address
 		BlockNumber: big.NewInt(req.Height),
 		Time:        uint64(req.Time.Unix()),
 		Difficulty:  big.NewInt(0),
-		BaseFee:     big.NewInt(0), // Phase 1: gas miễn phí
-		GasLimit:    30000000,
+		Random:      &common.Hash{}, // bật luật hậu-Merge (cần cho Shanghai); TODO: giá trị tất định theo block
+		BaseFee:     big.NewInt(0),  // Phase 1: gas miễn phí
+		BlobBaseFee: big.NewInt(0),
+		GasLimit:    blockGasLimit,
 	}
 
-	// Khởi tạo EVM cho cả block
-	vmenv := vm.NewEVM(blockContext, stateDB, &chainConfig, vm.Config{})
-
+	vmenv := vm.NewEVM(blockContext, stateDB, chainConfig, vm.Config{})
 	signer := types.LatestSignerForChainID(chainID)
+	gasPool := new(core.GasPool).AddGas(blockGasLimit)
 
 	for i, txBytes := range req.Txs {
-		// Decode tx
 		ethTx, err := app.txProcessor.DecodeTx(txBytes)
 		if err != nil {
 			txResults[i] = &abci.ExecTxResult{Code: 1, Log: fmt.Sprintf("decode error: %v", err)}
 			continue
 		}
 
-		// Lấy sender
 		msg, err := core.TransactionToMessage(ethTx, signer, big.NewInt(0))
 		if err != nil {
 			txResults[i] = &abci.ExecTxResult{Code: 1, Log: fmt.Sprintf("invalid signature: %v", err)}
 			continue
 		}
 
-		// Kiểm tra nonce
-		expectedNonce := stateDB.GetNonce(msg.From)
-		if msg.Nonce != expectedNonce {
-			txResults[i] = &abci.ExecTxResult{
-				Code: 1,
-				Log:  fmt.Sprintf("nonce mismatch: expected %d, got %d", expectedNonce, msg.Nonce),
-			}
+		vmenv.SetTxContext(core.NewEVMTxContext(msg))
+
+		// Snapshot để huỷ mọi thay đổi nếu tx không hợp lệ
+		snap := stateDB.Snapshot()
+
+		// ApplyMessage lo: kiểm tra nonce, trừ/hoàn gas, gas nội tại,
+		// địa chỉ contract, chuyển tiền, gọi EVM
+		result, err := core.ApplyMessage(vmenv, msg, gasPool)
+		if err != nil {
+			// Tx không hợp lệ (nonce sai, thiếu tiền, gas quá thấp...): state không đổi
+			stateDB.RevertToSnapshot(snap)
+			txResults[i] = &abci.ExecTxResult{Code: 1, Log: fmt.Sprintf("invalid tx: %v", err)}
 			continue
 		}
 
-		// Snapshot trước khi chạy, revert nếu lỗi
-		snapID := stateDB.Snapshot()
+		// Kết thúc tx: dọn journal/snapshot/refund cho tx sau
+		stateDB.Finalise(true)
 
-		// Set Tx Context 
-		txContext := core.NewEVMTxContext(msg)
-		vmenv.SetTxContext(txContext)
-
-		// Tăng nonce trước khi chạy (Ethereum convention) 
-		stateDB.SetNonce(msg.From, msg.Nonce+1, 0)
-
-		// Thực thi tx 
-		var ret []byte
-		var leftOverGas uint64
-		var errExec error
-
-		value, _ := uint256.FromBig(msg.Value)
-		if msg.To == nil {
-			// Tạo contract
-			ret, _, leftOverGas, errExec = vmenv.Create(
-				msg.From,
-				msg.Data,
-				msg.GasLimit,
-				value,
-			)
-		} else {
-			// Gọi contract
-			ret, leftOverGas, errExec = vmenv.Call(
-				msg.From,
-				*msg.To,
-				msg.Data,
-				msg.GasLimit,
-				value,
-			)
-		}
-		gasUsed := msg.GasLimit - leftOverGas
-
-		// Xử lý kết quả
 		code := uint32(0)
-		if errExec != nil {
+		logMsg := ""
+		if result.Err != nil { // tx được thực thi nhưng bị revert/out of gas
 			code = 1
-			// Revert state nếu thực thi lỗi
-			stateDB.RevertToSnapshot(snapID)
-			// Nonce vẫn tăng khi tx lỗi (Ethereum convention)
-			stateDB.SetNonce(msg.From, msg.Nonce+1, 0)
+			logMsg = result.Err.Error()
 		}
 
 		app.logger.Info("EVM executed",
 			"height", req.Height,
 			"txIndex", i,
 			"from", msg.From.Hex(),
-			"gasUsed", gasUsed,
-			"err", errExec,
-			"retLen", len(ret),
+			"gasUsed", result.UsedGas,
+			"err", result.Err,
+			"retLen", len(result.ReturnData),
 		)
 
 		txResults[i] = &abci.ExecTxResult{
 			Code:    code,
-			GasUsed: int64(gasUsed),
+			Log:     logMsg,
+			GasUsed: int64(result.UsedGas),
 		}
 	}
 
@@ -336,7 +311,7 @@ func (app *App) Commit(ctx context.Context, req *abci.CommitRequest) (*abci.Comm
 // CheckTx kiểm tra tx trước khi vào Mempool
 func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.CheckTxResponse, error) {
 	// Decode tx
-	_, err := app.txProcessor.DecodeTx(req.Tx)
+	ethTx, err := app.txProcessor.DecodeTx(req.Tx)
 	if err != nil {
 		return &abci.CheckTxResponse{
 			Code: 1,
@@ -345,16 +320,14 @@ func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.Ch
 	}
 
 	// Verify signature
-	ethTx, _ := app.txProcessor.DecodeTx(req.Tx)
-	_, err = app.txProcessor.RecoverSender(ethTx)
-	if err != nil {
+	if _, err = app.txProcessor.RecoverSender(ethTx); err != nil {
 		return &abci.CheckTxResponse{
 			Code: 1,
 			Log:  fmt.Sprintf("invalid signature: %v", err),
 		}, nil
 	}
 
-	// Bỏ qua nonce/balance check ở CheckTx (sẽ check kỹ ở FinalizeBlock)
+	// TODO (M2.2): kiểm tra nonce, số dư, gas limit
 
 	return &abci.CheckTxResponse{Code: 0}, nil
 }

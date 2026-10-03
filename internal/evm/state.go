@@ -567,8 +567,7 @@ func (s *PebbleStateDB) AddSlotToAccessList(addr common.Address, slot common.Has
 // --- Snapshot / Revert ---
 
 func (s *PebbleStateDB) Snapshot() int {
-	id := s.nextRevID
-	s.nextRevID++
+	id := len(s.snapshots) // id = vị trí trong mảng, luôn khớp sau khi revert
 	s.snapshots = append(s.snapshots, snapshot{
 		journalLen: len(s.journal),
 		refund:     s.refund,
@@ -672,6 +671,11 @@ func (s *PebbleStateDB) Finalise(deleteEmptyObjects bool) {
 			s.markDirty(addr)
 		}
 	}
+
+	// Kết thúc 1 tx: xoá journal/snapshot/refund để tx sau bắt đầu sạch
+	s.journal = s.journal[:0]
+	s.snapshots = s.snapshots[:0]
+	s.refund = 0
 }
 
 // Commit toàn bộ dirty state xuống PebbleDB
