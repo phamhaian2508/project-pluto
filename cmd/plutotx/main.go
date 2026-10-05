@@ -2,9 +2,13 @@
 //
 //	go run ./cmd/plutotx balance 0xĐịaChỉ
 //	go run ./cmd/plutotx send -key <privkey-hex> -to 0xĐịaChỉ -eth 10
+//	go run ./cmd/plutotx deploy -key <privkey-hex> -bytecode contracts/Counter.bin
+//	go run ./cmd/plutotx call -key <privkey-hex> -to 0xContract -data d09de08a
+//	go run ./cmd/plutotx storage 0xContract 0
 package main
 
 import (
+	"crypto/ecdsa"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -185,9 +189,131 @@ func cmdSend(args []string) {
 		from.Hex(), to.Hex(), *eth, out.Hash)
 }
 
+func cmdDeploy(args []string) {
+	fs := flag.NewFlagSet("deploy", flag.ExitOnError)
+	keyHex := fs.String("key", "", "private key hex of deployer")
+	bytecodeHex := fs.String("bytecode", "", "compiled contract creation bytecode hex or file path")
+	gas := fs.Uint64("gas", 3000000, "gas limit")
+	_ = fs.Parse(args)
+	if *keyHex == "" || *bytecodeHex == "" || *gas == 0 {
+		fatalUsage("deploy -key <hex> -bytecode <creation-bytecode-hex> [-gas limit]")
+	}
+	data, err := readBytecode(*bytecodeHex)
+	if err != nil {
+		fatal("invalid bytecode", err)
+	}
+	key, err := crypto.HexToECDSA(strings.TrimPrefix(*keyHex, "0x"))
+	if err != nil {
+		fatal("invalid private key", err)
+	}
+	from := crypto.PubkeyToAddress(key.PublicKey)
+	nonce := fetchNonce(from)
+	tx := types.NewTx(&types.LegacyTx{Nonce: nonce, GasPrice: new(big.Int), Gas: *gas, Data: data})
+	submitSignedTx(tx, key, func() {
+		fmt.Printf("Contract address: %s\n", crypto.CreateAddress(from, nonce).Hex())
+	})
+}
+
+func cmdCall(args []string) {
+	fs := flag.NewFlagSet("call", flag.ExitOnError)
+	keyHex := fs.String("key", "", "private key hex of caller")
+	toHex := fs.String("to", "", "contract address")
+	dataHex := fs.String("data", "", "ABI encoded function selector and arguments")
+	gas := fs.Uint64("gas", 300000, "gas limit")
+	_ = fs.Parse(args)
+	if *keyHex == "" || !common.IsHexAddress(*toHex) || *dataHex == "" || *gas == 0 {
+		fatalUsage("call -key <hex> -to <contract> -data <calldata-hex> [-gas limit]")
+	}
+	data, err := decodeHex(*dataHex)
+	if err != nil {
+		fatal("invalid calldata", err)
+	}
+	key, err := crypto.HexToECDSA(strings.TrimPrefix(*keyHex, "0x"))
+	if err != nil {
+		fatal("invalid private key", err)
+	}
+	to := common.HexToAddress(*toHex)
+	nonce := fetchNonce(crypto.PubkeyToAddress(key.PublicKey))
+	tx := types.NewTx(&types.LegacyTx{Nonce: nonce, GasPrice: new(big.Int), Gas: *gas, To: &to, Data: data})
+	submitSignedTx(tx, key, nil)
+}
+
+func cmdStorage(args []string) {
+	if len(args) != 2 || !common.IsHexAddress(args[0]) {
+		fatalUsage("storage <contract-address> <slot-hex>")
+	}
+	addr, slot := common.HexToAddress(args[0]), common.HexToHash(args[1])
+	data := append(addr.Bytes(), slot.Bytes()...)
+	value, err := query("storage", data)
+	if err != nil {
+		fatal("storage query failed", err)
+	}
+	fmt.Printf("0x%s\n", hex.EncodeToString([]byte(value)))
+}
+
+func fetchNonce(from common.Address) uint64 {
+	nonceStr, err := query("nonce", from.Bytes())
+	if err != nil {
+		fatal("nonce query failed", err)
+	}
+	nonce, err := strconv.ParseUint(nonceStr, 10, 64)
+	if err != nil {
+		fatal("invalid nonce from node", err)
+	}
+	return nonce
+}
+
+func submitSignedTx(tx *types.Transaction, key *ecdsa.PrivateKey, after func()) {
+	signed, err := types.SignTx(tx, types.LatestSignerForChainID(big.NewInt(chainID)), key)
+	if err != nil {
+		fatal("transaction signing failed", err)
+	}
+	raw, err := signed.MarshalBinary()
+	if err != nil {
+		fatal("transaction encoding failed", err)
+	}
+	res, err := rpcGet("broadcast_tx_sync", url.Values{"tx": {"0x" + hex.EncodeToString(raw)}})
+	if err != nil {
+		fatal("transaction broadcast failed", err)
+	}
+	var out struct {
+		Code uint32 `json:"code"`
+		Log  string `json:"log"`
+		Hash string `json:"hash"`
+	}
+	if err := json.Unmarshal(res, &out); err != nil {
+		fatal("invalid broadcast response", err)
+	}
+	if out.Code != 0 {
+		fatal("mempool rejected transaction", fmt.Errorf("code %d: %s", out.Code, out.Log))
+	}
+	fmt.Printf("Tx hash: %s\n", out.Hash)
+	if after != nil {
+		after()
+	}
+}
+
+func decodeHex(value string) ([]byte, error) {
+	value = strings.TrimPrefix(strings.TrimSpace(value), "0x")
+	if len(value)%2 != 0 {
+		value = "0" + value
+	}
+	return hex.DecodeString(value)
+}
+
+func readBytecode(value string) ([]byte, error) {
+	if contents, err := os.ReadFile(value); err == nil {
+		value = strings.TrimSpace(string(contents))
+	}
+	return decodeHex(value)
+}
+
+func fatalUsage(usage string)         { fmt.Fprintln(os.Stderr, "usage:", usage); os.Exit(2) }
+func fatal(message string, err error) { fmt.Fprintln(os.Stderr, message+":", err); os.Exit(1) }
+
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("lệnh: balance | send")
+		fmt.Println("lệnh: balance | send | deploy | call | storage")
 		os.Exit(1)
 	}
 	switch os.Args[1] {
@@ -195,6 +321,12 @@ func main() {
 		cmdBalance(os.Args[2:])
 	case "send":
 		cmdSend(os.Args[2:])
+	case "deploy":
+		cmdDeploy(os.Args[2:])
+	case "call":
+		cmdCall(os.Args[2:])
+	case "storage":
+		cmdStorage(os.Args[2:])
 	default:
 		fmt.Println("lệnh không hợp lệ:", os.Args[1])
 		os.Exit(1)
