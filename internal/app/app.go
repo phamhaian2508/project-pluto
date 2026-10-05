@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -10,9 +11,7 @@ import (
 
 	abci "github.com/cometbft/cometbft/abci/types"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/huyCuong73/pluto/internal/evm"
 	"github.com/huyCuong73/pluto/internal/store"
@@ -59,6 +58,7 @@ type App struct {
 	currentHeight int64
 	appHash       []byte
 	txProcessor   *evm.TxProcessor
+	executor      evm.Executor
 }
 
 type GenesisState struct {
@@ -148,6 +148,7 @@ func NewApp(dbPath string, logger *slog.Logger) (*App, error) {
 		currentHeight: currentHeight,
 		appHash:       appHash,
 		txProcessor:   evm.NewTxProcessor(chainID.Int64()),
+		executor:      evm.NewSequentialExecutor(newChainConfig(), chainID),
 	}, nil
 }
 
@@ -194,80 +195,58 @@ func (app *App) ProcessProposal(_ context.Context, req *abci.ProcessProposalRequ
 func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockRequest) (*abci.FinalizeBlockResponse, error) {
 	txResults := make([]*abci.ExecTxResult, len(req.Txs))
 
-	// StateDB mới cho block
+	// StateDB mới cho block. Transactions are decoded here so malformed input
+	// stays attached to its original index in the executor result.
 	stateDB := evm.NewPebbleStateDB(app.db)
 	chainConfig := newChainConfig()
-
-	blockContext := vm.BlockContext{
-		CanTransfer: core.CanTransfer,
-		Transfer:    core.Transfer,
-		GetHash:     func(n uint64) common.Hash { return common.Hash{} }, // TODO: block hash cache
-		Coinbase:    common.Address{},                                     // TODO: validator address
-		BlockNumber: big.NewInt(req.Height),
-		Time:        uint64(req.Time.Unix()),
-		Difficulty:  big.NewInt(0),
-		Random:      &common.Hash{}, // bật luật hậu-Merge (cần cho Shanghai); TODO: giá trị tất định theo block
-		BaseFee:     big.NewInt(0),  // Phase 1: gas miễn phí
-		BlobBaseFee: big.NewInt(0),
-		GasLimit:    blockGasLimit,
-	}
-
-	vmenv := vm.NewEVM(blockContext, stateDB, chainConfig, vm.Config{})
-	signer := types.LatestSignerForChainID(chainID)
-	gasPool := new(core.GasPool).AddGas(blockGasLimit)
-
+	transactions := make([]*types.Transaction, len(req.Txs))
+	preResults := make([]*abci.ExecTxResult, len(req.Txs))
 	for i, txBytes := range req.Txs {
 		ethTx, err := app.txProcessor.DecodeTx(txBytes)
 		if err != nil {
-			txResults[i] = &abci.ExecTxResult{Code: 1, Log: fmt.Sprintf("decode error: %v", err)}
+			preResults[i] = &abci.ExecTxResult{Code: 1, Log: fmt.Sprintf("decode error: %v", err)}
 			continue
 		}
+		transactions[i] = ethTx
+	}
 
-		msg, err := core.TransactionToMessage(ethTx, signer, big.NewInt(0))
+	blockHash := common.BytesToHash(req.Hash)
+	if len(req.Hash) == 0 {
+		seed := append([]byte("pluto-block-v1"), []byte(fmt.Sprintf("%d:%d", req.Height, req.Time.Unix()))...)
+		blockHash = sha256.Sum256(seed)
+	}
+	rand := sha256.Sum256(append([]byte("pluto-random-v1"), blockHash[:]...))
+	getHash := func(n uint64) common.Hash {
+		if n >= uint64(req.Height) || req.Height-int64(n) > 256 {
+			return common.Hash{}
+		}
+		b, err := app.db.Get(blockHashKey(n))
 		if err != nil {
-			txResults[i] = &abci.ExecTxResult{Code: 1, Log: fmt.Sprintf("invalid signature: %v", err)}
+			return common.Hash{}
+		}
+		return common.BytesToHash(b)
+	}
+	blockEnv := evm.BlockEnv{
+		Height: req.Height, Time: uint64(req.Time.Unix()),
+		Coinbase: common.BytesToAddress(req.ProposerAddress), GasLimit: blockGasLimit,
+		Random: common.Hash(rand), GetHash: getHash, BaseFee: new(big.Int), PreviousRoot: app.appHash,
+	}
+	app.executor = evm.NewSequentialExecutor(chainConfig, chainID)
+	blockResult, err := app.executor.ExecuteBlock(stateDB, blockEnv, transactions)
+	if err != nil {
+		return nil, fmt.Errorf("execute block: %w", err)
+	}
+	for i, result := range blockResult.Results {
+		if preResults[i] != nil {
+			txResults[i] = preResults[i]
 			continue
 		}
-
-		vmenv.SetTxContext(core.NewEVMTxContext(msg))
-
-		// Snapshot để huỷ mọi thay đổi nếu tx không hợp lệ
-		snap := stateDB.Snapshot()
-
-		// ApplyMessage lo: kiểm tra nonce, trừ/hoàn gas, gas nội tại,
-		// địa chỉ contract, chuyển tiền, gọi EVM
-		result, err := core.ApplyMessage(vmenv, msg, gasPool)
-		if err != nil {
-			// Tx không hợp lệ (nonce sai, thiếu tiền, gas quá thấp...): state không đổi
-			stateDB.RevertToSnapshot(snap)
-			txResults[i] = &abci.ExecTxResult{Code: 1, Log: fmt.Sprintf("invalid tx: %v", err)}
-			continue
-		}
-
-		// Kết thúc tx: dọn journal/snapshot/refund cho tx sau
-		stateDB.Finalise(true)
-
 		code := uint32(0)
-		logMsg := ""
-		if result.Err != nil { // tx được thực thi nhưng bị revert/out of gas
+		if result.Invalid || result.Failed {
 			code = 1
-			logMsg = result.Err.Error()
 		}
-
-		app.logger.Info("EVM executed",
-			"height", req.Height,
-			"txIndex", i,
-			"from", msg.From.Hex(),
-			"gasUsed", result.UsedGas,
-			"err", result.Err,
-			"retLen", len(result.ReturnData),
-		)
-
-		txResults[i] = &abci.ExecTxResult{
-			Code:    code,
-			Log:     logMsg,
-			GasUsed: int64(result.UsedGas),
-		}
+		txResults[i] = &abci.ExecTxResult{Code: code, Log: result.ErrMsg, GasUsed: int64(result.GasUsed)}
+		app.logger.Info("EVM executed", "height", req.Height, "txIndex", i, "gasUsed", result.GasUsed, "err", result.ErrMsg)
 	}
 
 	// Commit state
@@ -276,9 +255,9 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 	}
 
 	// Tính AppHash
-	newAppHash := stateDB.ComputeAppHash()
-	if newAppHash != nil {
-		app.appHash = newAppHash
+	app.appHash = append(app.appHash[:0], blockResult.StateRoot[:]...)
+	if err := app.db.Set(blockHashKey(uint64(req.Height)), blockHash.Bytes()); err != nil {
+		return nil, fmt.Errorf("save block hash: %w", err)
 	}
 
 	app.currentHeight = req.Height
@@ -288,6 +267,8 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		AppHash:   app.appHash,
 	}, nil
 }
+
+func blockHashKey(height uint64) []byte { return []byte(fmt.Sprintf("block-hash-%020d", height)) }
 
 // Commit metadata (height + appHash)
 func (app *App) Commit(ctx context.Context, req *abci.CommitRequest) (*abci.CommitResponse, error) {
@@ -341,6 +322,14 @@ func (app *App) Query(ctx context.Context, req *abci.QueryRequest) (*abci.QueryR
 		return &abci.QueryResponse{Code: 0, Value: []byte(stateDB.GetBalance(addr).ToBig().String())}, nil
 	case "nonce":
 		return &abci.QueryResponse{Code: 0, Value: []byte(strconv.FormatUint(stateDB.GetNonce(addr), 10))}, nil
+	case "storage":
+		if len(req.Data) != common.AddressLength+common.HashLength {
+			return &abci.QueryResponse{Code: 1, Log: "storage query data must contain a 20-byte address and 32-byte slot"}, nil
+		}
+		storageAddr := common.BytesToAddress(req.Data[:common.AddressLength])
+		storageKey := common.BytesToHash(req.Data[common.AddressLength:])
+		value := stateDB.GetState(storageAddr, storageKey)
+		return &abci.QueryResponse{Code: 0, Value: value.Bytes()}, nil
 	default:
 		return &abci.QueryResponse{Code: 1, Log: "unknown path: " + req.Path}, nil
 	}

@@ -51,6 +51,7 @@ type journalEntry struct {
 
 // snapshot lưu trạng thái tại một thời điểm
 type snapshot struct {
+	id         int
 	journalLen int    // Vị trí journal
 	refund     uint64 // Gas refund
 	logsLen    int    // Số lượng logs
@@ -93,6 +94,9 @@ type PebbleStateDB struct {
 
 	// Đánh dấu accounts đã đổi (cho AppHash)
 	dirtyAccounts map[common.Address]bool
+
+	// Giá trị slot tại thời điểm BẮT ĐẦU tx hiện tại (cho GetCommittedState, EIP-2200)
+	originStorage map[common.Address]map[common.Hash]common.Hash
 }
 
 // accessList warm addresses/slots cho EIP-2929
@@ -123,6 +127,7 @@ func NewPebbleStateDB(db *store.PebbleDB) *PebbleStateDB {
 		snapshots:        make([]snapshot, 0, 4),
 		accessList:       newAccessList(),
 		dirtyAccounts:    make(map[common.Address]bool),
+		originStorage:    make(map[common.Address]map[common.Hash]common.Hash),
 	}
 }
 
@@ -192,6 +197,7 @@ func (s *PebbleStateDB) CreateAccount(addr common.Address) {
 	acc.Nonce = 0
 	acc.CodeHash = nil
 	acc.StorageRoot = common.Hash{}
+	s.dirtyAccounts[addr] = true
 	s.markDirty(addr)
 }
 
@@ -318,7 +324,7 @@ func (s *PebbleStateDB) SetCode(addr common.Address, code []byte, reason tracing
 	s.markDirty(addr)
 
 	// go-ethereum v1.16 trả về code hash cũ
-	return acc.CodeHash
+	return append([]byte(nil), acc.CodeHash...)
 }
 
 func (s *PebbleStateDB) GetCodeSize(addr common.Address) int {
@@ -370,13 +376,16 @@ func (s *PebbleStateDB) getStorage(addr common.Address, key common.Hash) common.
 	return val
 }
 
+// GetCommittedState: giá trị slot tại thời điểm bắt đầu tx hiện tại (EIP-2200).
+// Đây là giá trị gốc dùng để tính gas SSTORE, KHÔNG phải giá trị đầu block.
 func (s *PebbleStateDB) GetCommittedState(addr common.Address, key common.Hash) common.Hash {
-	// Đọc thẳng từ DB (EIP-2200)
-	data, _ := s.db.Get(storageKey(addr, key))
-	if len(data) == 0 {
-		return common.Hash{}
+	if slots, ok := s.originStorage[addr]; ok {
+		if v, ok := slots[key]; ok {
+			return v
+		}
 	}
-	return common.BytesToHash(data)
+	// Chưa bị ghi trong tx này, nên giá trị hiện tại cũng chính là giá trị đầu tx
+	return s.getStorage(addr, key)
 }
 
 func (s *PebbleStateDB) GetStateAndCommittedState(addr common.Address, key common.Hash) (common.Hash, common.Hash) {
@@ -389,6 +398,14 @@ func (s *PebbleStateDB) GetState(addr common.Address, key common.Hash) common.Ha
 
 func (s *PebbleStateDB) SetState(addr common.Address, key, value common.Hash) common.Hash {
 	prev := s.GetState(addr, key)
+
+	// Ghi nhớ giá trị đầu tx của slot (chỉ lần ghi đầu tiên trong tx)
+	if s.originStorage[addr] == nil {
+		s.originStorage[addr] = make(map[common.Hash]common.Hash)
+	}
+	if _, ok := s.originStorage[addr][key]; !ok {
+		s.originStorage[addr][key] = prev
+	}
 
 	// Journal revert
 	s.journal = append(s.journal, journalEntry{
@@ -567,8 +584,10 @@ func (s *PebbleStateDB) AddSlotToAccessList(addr common.Address, slot common.Has
 // --- Snapshot / Revert ---
 
 func (s *PebbleStateDB) Snapshot() int {
-	id := len(s.snapshots) // id = vị trí trong mảng, luôn khớp sau khi revert
+	id := s.nextRevID
+	s.nextRevID++
 	s.snapshots = append(s.snapshots, snapshot{
+		id:         id,
 		journalLen: len(s.journal),
 		refund:     s.refund,
 		logsLen:    len(s.logs),
@@ -577,11 +596,18 @@ func (s *PebbleStateDB) Snapshot() int {
 }
 
 func (s *PebbleStateDB) RevertToSnapshot(revid int) {
-	if revid < 0 || revid >= len(s.snapshots) {
+	idx := -1
+	for i := range s.snapshots {
+		if s.snapshots[i].id == revid {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
 		panic("RevertToSnapshot: invalid revision id")
 	}
 
-	snap := s.snapshots[revid]
+	snap := s.snapshots[idx]
 
 	// Revert ngược journal
 	for i := len(s.journal) - 1; i >= snap.journalLen; i-- {
@@ -617,7 +643,7 @@ func (s *PebbleStateDB) RevertToSnapshot(revid int) {
 
 	// Truncate journal & snapshots
 	s.journal = s.journal[:snap.journalLen]
-	s.snapshots = s.snapshots[:revid]
+	s.snapshots = s.snapshots[:idx]
 	s.refund = snap.refund
 	s.logs = s.logs[:snap.logsLen]
 }
@@ -672,7 +698,10 @@ func (s *PebbleStateDB) Finalise(deleteEmptyObjects bool) {
 		}
 	}
 
-	// Kết thúc 1 tx: xoá journal/snapshot/refund để tx sau bắt đầu sạch
+	// Kết thúc 1 tx: xoá journal/snapshot/refund/origin để tx sau bắt đầu sạch
+	s.originStorage = make(map[common.Address]map[common.Hash]common.Hash)
+	s.transientStorage = make(map[common.Address]map[common.Hash]common.Hash)
+	s.selfDestructed = make(map[common.Address]bool)
 	s.journal = s.journal[:0]
 	s.snapshots = s.snapshots[:0]
 	s.refund = 0
@@ -682,80 +711,139 @@ func (s *PebbleStateDB) Finalise(deleteEmptyObjects bool) {
 func (s *PebbleStateDB) Commit() error {
 	batch := s.db.NewBatch()
 	defer batch.Close()
-
-	// Ghi accounts
-	for addr, acc := range s.state {
-		data, err := rlp.EncodeToBytes(acc)
-		if err != nil {
-			return err
-		}
-		key := append([]byte("acc-"), addr.Bytes()...)
-		if err := batch.Set(key, data); err != nil {
-			return err
-		}
+	writes, err := s.PendingWrites()
+	if err != nil {
+		return err
 	}
-
-	// Ghi code dirty
-	for addr := range s.dirtyCode {
-		code := s.code[addr]
-		if len(code) > 0 {
-			if err := batch.Set(codeKey(addr), code); err != nil {
+	keys := make([]string, 0, len(writes))
+	for key := range writes {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if writes[key] == nil {
+			if err := batch.Delete([]byte(key)); err != nil {
 				return err
 			}
+		} else if err := batch.Set([]byte(key), writes[key]); err != nil {
+			return err
 		}
 	}
-
-	// Ghi storage dirty
-	for addr, dirtyKeys := range s.dirtyStorage {
-		slots := s.storage[addr]
-		for key := range dirtyKeys {
-			val := slots[key]
-			if val == (common.Hash{}) {
-				// Clear storage (EIP-2200), dùng Set(key, nil) thay cho Delete
-				if err := batch.Set(storageKey(addr, key), nil); err != nil {
-					return err
-				}
-			} else {
-				if err := batch.Set(storageKey(addr, key), val.Bytes()); err != nil {
-					return err
-				}
-			}
-		}
+	if err := batch.WriteSync(); err != nil {
+		return err
 	}
-
-	return batch.WriteSync()
+	return nil
 }
 
-// AppHash — Tính SHA256 từ dirty accounts (Phase 1 simple approach)
-func (s *PebbleStateDB) ComputeAppHash() []byte {
-	if len(s.dirtyAccounts) == 0 {
-		return nil
+// StateReader exposes a stable read-only view for execution engines.
+func (s *PebbleStateDB) Account(addr common.Address) (*Account, bool) {
+	acc := s.getAccount(addr)
+	if acc == nil {
+		return nil, false
 	}
+	clone := *acc
+	clone.Balance = new(big.Int).Set(acc.Balance)
+	clone.CodeHash = append([]byte(nil), acc.CodeHash...)
+	return &clone, s.Exist(addr)
+}
 
-	// Sort address deterministic
-	addrs := make([]common.Address, 0, len(s.dirtyAccounts))
+func (s *PebbleStateDB) Storage(addr common.Address, key common.Hash) common.Hash {
+	return s.GetState(addr, key)
+}
+func (s *PebbleStateDB) Code(addr common.Address) []byte {
+	return append([]byte(nil), s.GetCode(addr)...)
+}
+
+// PendingWrites returns the canonical Pebble key/value delta for this block.
+// A nil value denotes deletion. It lets alternate executors share the same
+// persistence boundary without reaching into PebbleStateDB internals.
+func (s *PebbleStateDB) PendingWrites() (map[string][]byte, error) {
+	writes := make(map[string][]byte)
 	for addr := range s.dirtyAccounts {
-		addrs = append(addrs, addr)
-	}
-	sort.Slice(addrs, func(i, j int) bool {
-		return addrs[i].Hex() < addrs[j].Hex()
-	})
-
-	h := sha256.New()
-	for _, addr := range addrs {
 		acc := s.state[addr]
 		if acc == nil {
 			continue
 		}
-		data, err := rlp.EncodeToBytes(acc)
+		value, err := rlp.EncodeToBytes(acc)
 		if err != nil {
-			continue
+			return nil, err
 		}
-		h.Write(addr.Bytes())
-		h.Write(data)
+		writes[string(append([]byte("acc-"), addr.Bytes()...))] = value
 	}
+	for addr := range s.dirtyCode {
+		writes[string(codeKey(addr))] = append([]byte(nil), s.code[addr]...)
+	}
+	for addr, slots := range s.dirtyStorage {
+		for key := range slots {
+			value := s.storage[addr][key]
+			if value == (common.Hash{}) {
+				writes[string(storageKey(addr, key))] = nil
+			} else {
+				writes[string(storageKey(addr, key))] = value.Bytes()
+			}
+		}
+	}
+	return writes, nil
+}
 
+// ComputeAppHash chains a canonical, sorted state delta to the previous block
+// root. The variadic argument preserves the old no-argument call shape.
+func (s *PebbleStateDB) ComputeAppHash(previousRoot ...[]byte) []byte {
+	var prev []byte
+	if len(previousRoot) > 0 {
+		prev = previousRoot[0]
+	}
+	keys := make([]string, 0, len(s.dirtyAccounts)+len(s.dirtyCode))
+	values := make(map[string][]byte)
+	for addr := range s.dirtyAccounts {
+		if acc := s.state[addr]; acc != nil {
+			encoded, err := rlp.EncodeToBytes(acc)
+			if err != nil {
+				continue
+			}
+			k := "account:" + string(addr.Bytes())
+			keys = append(keys, k)
+			values[k] = encoded
+		}
+	}
+	for addr, slots := range s.dirtyStorage {
+		for key := range slots {
+			k := "storage:" + string(addr.Bytes()) + string(key.Bytes())
+			keys = append(keys, k)
+			val := s.storage[addr][key]
+			if val != (common.Hash{}) {
+				values[k] = val.Bytes()
+			}
+		}
+	}
+	for addr := range s.dirtyCode {
+		k := "code:" + string(addr.Bytes())
+		keys = append(keys, k)
+		if code := s.code[addr]; len(code) > 0 {
+			values[k] = code
+		}
+	}
+	sort.Strings(keys)
+	h := sha256.New()
+	h.Write([]byte("pluto-state-root-v1"))
+	h.Write(prev)
+	for _, key := range keys {
+		// Length prefixes prevent ambiguous concatenations. Missing values mark deletion.
+		writeRootField(h, []byte(key))
+		writeRootField(h, values[key])
+	}
 	return h.Sum(nil)
+}
+
+func writeRootField(h interface{ Write([]byte) (int, error) }, field []byte) {
+	var size [8]byte
+	n := uint64(len(field))
+	for i := 7; i >= 0; i-- {
+		size[i] = byte(n)
+		n >>= 8
+	}
+	_, _ = h.Write(size[:])
+	_, _ = h.Write(field)
 }
 
 // Add balance cho genesis
