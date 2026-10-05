@@ -2,6 +2,9 @@
 //
 //	go run ./cmd/plutotx balance 0xĐịaChỉ
 //	go run ./cmd/plutotx send -key <privkey-hex> -to 0xĐịaChỉ -eth 10
+//	go run ./cmd/plutotx deploy -key <privkey-hex> -bytecode contracts/Counter.bin
+//	go run ./cmd/plutotx call -key <privkey-hex> -to 0xContract -data d09de08a
+//	go run ./cmd/plutotx storage 0xContract 0
 package main
 
 import (
@@ -189,13 +192,13 @@ func cmdSend(args []string) {
 func cmdDeploy(args []string) {
 	fs := flag.NewFlagSet("deploy", flag.ExitOnError)
 	keyHex := fs.String("key", "", "private key hex of deployer")
-	bytecodeHex := fs.String("bytecode", "", "compiled contract creation bytecode hex")
+	bytecodeHex := fs.String("bytecode", "", "compiled contract creation bytecode hex or file path")
 	gas := fs.Uint64("gas", 3000000, "gas limit")
 	_ = fs.Parse(args)
 	if *keyHex == "" || *bytecodeHex == "" || *gas == 0 {
 		fatalUsage("deploy -key <hex> -bytecode <creation-bytecode-hex> [-gas limit]")
 	}
-	data, err := decodeHex(*bytecodeHex)
+	data, err := readBytecode(*bytecodeHex)
 	if err != nil {
 		fatal("invalid bytecode", err)
 	}
@@ -298,12 +301,19 @@ func decodeHex(value string) ([]byte, error) {
 	return hex.DecodeString(value)
 }
 
+func readBytecode(value string) ([]byte, error) {
+	if contents, err := os.ReadFile(value); err == nil {
+		value = strings.TrimSpace(string(contents))
+	}
+	return decodeHex(value)
+}
+
 func fatalUsage(usage string)         { fmt.Fprintln(os.Stderr, "usage:", usage); os.Exit(2) }
 func fatal(message string, err error) { fmt.Fprintln(os.Stderr, message+":", err); os.Exit(1) }
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("lệnh: balance | send")
+		fmt.Println("lệnh: balance | send | deploy | call | storage")
 		os.Exit(1)
 	}
 	switch os.Args[1] {

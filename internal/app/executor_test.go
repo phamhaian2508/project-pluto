@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -271,20 +273,29 @@ func TestCounterStorageAcrossThreeCallsAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	from := crypto.PubkeyToAddress(key.PublicKey)
-	contract := common.HexToAddress("0x000000000000000000000000000000000000cafe")
 	state := evm.NewPebbleStateDB(app.db)
 	state.AddBalanceBig(from, new(big.Int).Mul(big.NewInt(1), big.NewInt(1e18)))
-	state.CreateAccount(contract)
-	// Counter-compatible runtime: dispatch increment() (d09de08a), then
-	// increment storage slot 0. It is kept inline so this test needs no solc.
-	runtime := common.FromHex("0x60003560e01c63d09de08a14601f5760003560e01c6306661abd14602a57005b600054600101600055005b60005460005260206000f3")
-	state.SetCode(contract, runtime, 0)
 	if err := state.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	app.appHash = state.ComputeAppHash()
-	txs := make([]*types.Transaction, 3)
-	for i := range txs {
+	creationBytecode, err := os.ReadFile("../../contracts/Counter.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	creation, err := hex.DecodeString(strings.TrimSpace(string(creationBytecode)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deploy := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: new(big.Int), Gas: 3000000, Data: creation})
+	deploy, err = types.SignTx(deploy, types.LatestSignerForChainID(chainID), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := crypto.CreateAddress(from, 0)
+	txs := make([]*types.Transaction, 4)
+	txs[0] = deploy
+	for i := 1; i < len(txs); i++ {
 		txs[i] = types.NewTx(&types.LegacyTx{Nonce: uint64(i), GasPrice: new(big.Int), Gas: 100000, To: &contract, Data: common.FromHex("0xd09de08a")})
 		txs[i], err = types.SignTx(txs[i], types.LatestSignerForChainID(chainID), key)
 		if err != nil {
@@ -338,5 +349,62 @@ func TestStateRootIncludesStorageChanges(t *testing.T) {
 	}
 	if got := len(after); got != 32 {
 		t.Fatalf("state root length = %d, want 32", got)
+	}
+}
+
+func TestSequentialExecutorUsesDeterministicBlockContext(t *testing.T) {
+	app, _, key := testApp(t)
+	runBlock(t, app, 1) // stores this block hash for a later BLOCKHASH opcode
+	ancestor := common.BytesToHash([]byte{0xa1, 0xb2, 0xc3})
+	if err := app.db.Set(blockHashKey(1), ancestor.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	coinbase := common.HexToAddress("0x000000000000000000000000000000000000bEEF")
+	random := common.HexToHash("0xfeed")
+	cases := []struct {
+		address common.Address
+		code    string
+		want    common.Hash
+	}{
+		{common.HexToAddress("0x1001"), "0x6001405f5260205ff3", ancestor},                         // BLOCKHASH(1)
+		{common.HexToAddress("0x1002"), "0x415f5260205ff3", common.BytesToHash(coinbase.Bytes())}, // COINBASE
+		{common.HexToAddress("0x1003"), "0x445f5260205ff3", random},                               // PREVRANDAO
+	}
+	state := evm.NewPebbleStateDB(app.db)
+	txs := make([]*types.Transaction, len(cases))
+	for i, tc := range cases {
+		state.CreateAccount(tc.address)
+		state.SetCode(tc.address, common.FromHex(tc.code), 0)
+		txs[i] = types.NewTx(&types.LegacyTx{Nonce: uint64(i), GasPrice: new(big.Int), Gas: 100000, To: &tc.address})
+		var err error
+		txs[i], err = types.SignTx(txs[i], types.LatestSignerForChainID(chainID), key)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := state.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	env := evm.BlockEnv{
+		Height: 2, Time: 2, Coinbase: coinbase, GasLimit: blockGasLimit,
+		Random: random, PreviousRoot: app.appHash, BaseFee: new(big.Int),
+		GetHash: func(height uint64) common.Hash {
+			if height == 1 {
+				return ancestor
+			}
+			return common.Hash{}
+		},
+	}
+	result, err := evm.NewSequentialExecutor(newChainConfig(), chainID).ExecuteBlock(state, env, txs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, got := range result.Results {
+		if got.Invalid || got.Failed {
+			t.Fatalf("context tx %d failed: %s", i, got.ErrMsg)
+		}
+		if len(got.ReturnData) != common.HashLength || common.BytesToHash(got.ReturnData) != cases[i].want {
+			t.Fatalf("context tx %d returned %x, want %s", i, got.ReturnData, cases[i].want)
+		}
 	}
 }
