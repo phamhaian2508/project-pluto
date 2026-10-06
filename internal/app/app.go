@@ -7,23 +7,27 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"sort"
 	"strconv"
 
 	abci "github.com/cometbft/cometbft/abci/types"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
+	plutoconfig "github.com/huyCuong73/pluto/internal/config"
 	"github.com/huyCuong73/pluto/internal/evm"
 	"github.com/huyCuong73/pluto/internal/store"
 )
 
 const (
-	AppVersion    uint64 = 1
-	blockGasLimit uint64 = 30000000
+	AppVersion         uint64 = 1
+	blockGasLimit      uint64 = 30000000
+	maxTransactionSize        = 128 * 1024
 )
 
 // Chain ID
-var chainID = big.NewInt(1)
+var chainID = big.NewInt(plutoconfig.EVMChainID)
 
 // newChainConfig: bật mọi EIP đến Shanghai từ block 0.
 // Chưa bật Cancun vì SelfDestruct (EIP-6780) trong state chưa làm đúng.
@@ -57,8 +61,16 @@ type App struct {
 	logger        *slog.Logger
 	currentHeight int64
 	appHash       []byte
+	pendingBlock  *pendingBlock
 	txProcessor   *evm.TxProcessor
 	executor      evm.Executor
+}
+
+type pendingBlock struct {
+	height    int64
+	appHash   []byte
+	blockHash common.Hash
+	writes    map[string][]byte
 }
 
 type GenesisState struct {
@@ -193,6 +205,10 @@ func (app *App) ProcessProposal(_ context.Context, req *abci.ProcessProposalRequ
 
 // FinalizeBlock xử lý các tx trong block (tuần tự)
 func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockRequest) (*abci.FinalizeBlockResponse, error) {
+	if app.pendingBlock != nil {
+		return nil, fmt.Errorf("cannot finalize height %d: height %d is not committed", req.Height, app.pendingBlock.height)
+	}
+
 	txResults := make([]*abci.ExecTxResult, len(req.Txs))
 
 	// StateDB mới cho block. Transactions are decoded here so malformed input
@@ -248,49 +264,83 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		txResults[i] = &abci.ExecTxResult{Code: code, Log: result.ErrMsg, GasUsed: int64(result.GasUsed)}
 		app.logger.Info("EVM executed", "height", req.Height, "txIndex", i, "gasUsed", result.GasUsed, "err", result.ErrMsg)
 	}
-
-	// Commit state
-	if err := stateDB.Commit(); err != nil {
-		return nil, fmt.Errorf("failed to commit stateDB: %w", err)
+	if err := app.stageEthereumBlock(req, blockHash, blockResult.StateRoot, transactions, blockResult.Results, blockResult.Writes); err != nil {
+		return nil, fmt.Errorf("stage ethereum block metadata: %w", err)
 	}
 
-	// Tính AppHash
-	app.appHash = append(app.appHash[:0], blockResult.StateRoot[:]...)
-	if err := app.db.Set(blockHashKey(uint64(req.Height)), blockHash.Bytes()); err != nil {
-		return nil, fmt.Errorf("save block hash: %w", err)
+	// Stage state and metadata. Commit persists all of them atomically.
+	pendingAppHash := append([]byte(nil), blockResult.StateRoot[:]...)
+	app.pendingBlock = &pendingBlock{
+		height:    req.Height,
+		appHash:   pendingAppHash,
+		blockHash: blockHash,
+		writes:    blockResult.Writes,
 	}
-
-	app.currentHeight = req.Height
 
 	return &abci.FinalizeBlockResponse{
 		TxResults: txResults,
-		AppHash:   app.appHash,
+		AppHash:   pendingAppHash,
 	}, nil
 }
 
 func blockHashKey(height uint64) []byte { return []byte(fmt.Sprintf("block-hash-%020d", height)) }
 
-// Commit metadata (height + appHash)
+// Commit persists the finalized block state and metadata in one atomic batch.
 func (app *App) Commit(ctx context.Context, req *abci.CommitRequest) (*abci.CommitResponse, error) {
-	// Lưu height
-	k := []byte("height")
-	v := []byte(fmt.Sprintf("%d", app.currentHeight))
-	if err := app.db.Set(k, v); err != nil {
-		return nil, fmt.Errorf("failed to commit block height: %w", err)
+	if app.pendingBlock == nil {
+		return &abci.CommitResponse{}, nil
 	}
 
-	// Lưu appHash
-	if len(app.appHash) > 0 {
-		if err := app.db.Set([]byte("appHash"), app.appHash); err != nil {
-			return nil, fmt.Errorf("failed to commit appHash: %w", err)
+	pending := app.pendingBlock
+	batch := app.db.NewBatch()
+	defer batch.Close()
+
+	keys := make([]string, 0, len(pending.writes))
+	for key := range pending.writes {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := pending.writes[key]
+		if value == nil {
+			if err := batch.Delete([]byte(key)); err != nil {
+				return nil, fmt.Errorf("stage state deletion: %w", err)
+			}
+			continue
+		}
+		if err := batch.Set([]byte(key), value); err != nil {
+			return nil, fmt.Errorf("stage state write: %w", err)
 		}
 	}
+	if err := batch.Set([]byte("height"), []byte(strconv.FormatInt(pending.height, 10))); err != nil {
+		return nil, fmt.Errorf("stage block height: %w", err)
+	}
+	if err := batch.Set([]byte("appHash"), pending.appHash); err != nil {
+		return nil, fmt.Errorf("stage app hash: %w", err)
+	}
+	if err := batch.Set(blockHashKey(uint64(pending.height)), pending.blockHash.Bytes()); err != nil {
+		return nil, fmt.Errorf("stage block hash: %w", err)
+	}
+	if err := batch.WriteSync(); err != nil {
+		return nil, fmt.Errorf("commit finalized block: %w", err)
+	}
+
+	app.currentHeight = pending.height
+	app.appHash = append(app.appHash[:0], pending.appHash...)
+	app.pendingBlock = nil
 
 	return &abci.CommitResponse{}, nil
 }
 
 // CheckTx kiểm tra tx trước khi vào Mempool
 func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.CheckTxResponse, error) {
+	if len(req.Tx) > maxTransactionSize {
+		return &abci.CheckTxResponse{
+			Code: 1,
+			Log:  fmt.Sprintf("transaction too large: %d bytes, maximum %d", len(req.Tx), maxTransactionSize),
+		}, nil
+	}
+
 	// Decode tx
 	ethTx, err := app.txProcessor.DecodeTx(req.Tx)
 	if err != nil {
@@ -300,17 +350,69 @@ func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.Ch
 		}, nil
 	}
 
+	if !ethTx.Protected() || ethTx.ChainId().Cmp(chainID) != 0 {
+		return &abci.CheckTxResponse{
+			Code: 1,
+			Log:  fmt.Sprintf("wrong chain ID: got %s, want %s", ethTx.ChainId(), chainID),
+		}, nil
+	}
+
 	// Verify signature
-	if _, err = app.txProcessor.RecoverSender(ethTx); err != nil {
+	sender, err := app.txProcessor.RecoverSender(ethTx)
+	if err != nil {
 		return &abci.CheckTxResponse{
 			Code: 1,
 			Log:  fmt.Sprintf("invalid signature: %v", err),
 		}, nil
 	}
 
-	// TODO (M2.2): kiểm tra nonce, số dư, gas limit
+	if ethTx.Gas() > blockGasLimit {
+		return &abci.CheckTxResponse{
+			Code: 1,
+			Log:  fmt.Sprintf("gas limit %d exceeds block gas limit %d", ethTx.Gas(), blockGasLimit),
+		}, nil
+	}
 
-	return &abci.CheckTxResponse{Code: 0}, nil
+	// The chain enables Homestead, Istanbul (EIP-2028), and Shanghai
+	// (EIP-3860) from genesis.
+	intrinsicGas, err := core.IntrinsicGas(
+		ethTx.Data(),
+		ethTx.AccessList(),
+		ethTx.SetCodeAuthorizations(),
+		ethTx.To() == nil,
+		true,
+		true,
+		true,
+	)
+	if err != nil {
+		return &abci.CheckTxResponse{Code: 1, Log: fmt.Sprintf("invalid intrinsic gas: %v", err)}, nil
+	}
+	if ethTx.Gas() < intrinsicGas {
+		return &abci.CheckTxResponse{
+			Code: 1,
+			Log:  fmt.Sprintf("intrinsic gas too low: got %d, need %d", ethTx.Gas(), intrinsicGas),
+		}, nil
+	}
+
+	stateDB := evm.NewPebbleStateDB(app.db)
+	expectedNonce := stateDB.GetNonce(sender)
+	if ethTx.Nonce() != expectedNonce {
+		return &abci.CheckTxResponse{
+			Code: 1,
+			Log:  fmt.Sprintf("invalid nonce: got %d, want %d", ethTx.Nonce(), expectedNonce),
+		}, nil
+	}
+
+	balance := stateDB.GetBalance(sender).ToBig()
+	required := ethTx.Cost()
+	if balance.Cmp(required) < 0 {
+		return &abci.CheckTxResponse{
+			Code: 1,
+			Log:  fmt.Sprintf("insufficient balance: have %s, need %s", balance, required),
+		}, nil
+	}
+
+	return &abci.CheckTxResponse{Code: 0, GasWanted: int64(ethTx.Gas())}, nil
 }
 
 func (app *App) Query(ctx context.Context, req *abci.QueryRequest) (*abci.QueryResponse, error) {
