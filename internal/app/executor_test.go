@@ -69,7 +69,202 @@ func runBlock(t *testing.T, app *App, height int64, txs ...*types.Transaction) *
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := app.Commit(context.Background(), &abci.CommitRequest{}); err != nil {
+		t.Fatal(err)
+	}
 	return resp
+}
+
+func TestFinalizeBlockStagesStateUntilAtomicCommit(t *testing.T) {
+	app, from, key := testApp(t)
+	to := common.HexToAddress("0x0000000000000000000000000000000000001234")
+	tx := types.NewTx(&types.LegacyTx{
+		Nonce:    0,
+		GasPrice: new(big.Int),
+		Gas:      21000,
+		To:       &to,
+		Value:    big.NewInt(5),
+	})
+	tx, err := types.SignTx(tx, types.LatestSignerForChainID(chainID), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := tx.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	previousHash := append([]byte(nil), app.appHash...)
+	resp, err := app.FinalizeBlock(context.Background(), &abci.FinalizeBlockRequest{
+		Height: 1,
+		Time:   time.Unix(1, 0),
+		Hash:   []byte{1},
+		Txs:    [][]byte{encoded},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.TxResults[0].Code != 0 {
+		t.Fatalf("transaction failed: %s", resp.TxResults[0].Log)
+	}
+	if app.currentHeight != 0 || common.BytesToHash(app.appHash) != common.BytesToHash(previousHash) {
+		t.Fatalf("committed metadata changed during FinalizeBlock: height=%d appHash=%x", app.currentHeight, app.appHash)
+	}
+	state := evm.NewPebbleStateDB(app.db)
+	if got := state.GetBalance(to).ToBig(); got.Sign() != 0 {
+		t.Fatalf("recipient balance before Commit = %s, want 0", got)
+	}
+	if got := state.GetNonce(from); got != 0 {
+		t.Fatalf("sender nonce before Commit = %d, want 0", got)
+	}
+	if height, err := app.db.Get([]byte("height")); err != nil || len(height) != 0 {
+		t.Fatalf("height persisted before Commit: value=%q err=%v", height, err)
+	}
+	if hash, err := app.db.Get([]byte("appHash")); err != nil || len(hash) != 0 {
+		t.Fatalf("app hash persisted before Commit: value=%x err=%v", hash, err)
+	}
+	if hash, err := app.db.Get(blockHashKey(1)); err != nil || len(hash) != 0 {
+		t.Fatalf("block hash persisted before Commit: value=%x err=%v", hash, err)
+	}
+
+	if _, err := app.Commit(context.Background(), &abci.CommitRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	state = evm.NewPebbleStateDB(app.db)
+	if got := state.GetBalance(to).ToBig(); got.Cmp(big.NewInt(5)) != 0 {
+		t.Fatalf("recipient balance after Commit = %s, want 5", got)
+	}
+	if got := state.GetNonce(from); got != 1 {
+		t.Fatalf("sender nonce after Commit = %d, want 1", got)
+	}
+	if app.currentHeight != 1 {
+		t.Fatalf("current height after Commit = %d, want 1", app.currentHeight)
+	}
+	if string(app.appHash) != string(resp.AppHash) {
+		t.Fatalf("committed app hash = %x, response app hash = %x", app.appHash, resp.AppHash)
+	}
+	if hash, err := app.db.Get([]byte("appHash")); err != nil || string(hash) != string(resp.AppHash) {
+		t.Fatalf("persisted app hash = %x, response app hash = %x, err=%v", hash, resp.AppHash, err)
+	}
+	if hash, err := app.db.Get(blockHashKey(1)); err != nil || common.BytesToHash(hash) != common.BytesToHash([]byte{1}) {
+		t.Fatalf("block hash after Commit: value=%x err=%v", hash, err)
+	}
+}
+
+func TestCommitStoresEthereumBlockTransactionReceiptLogsAndLocation(t *testing.T) {
+	app, from, key := testApp(t)
+	contract := common.HexToAddress("0x000000000000000000000000000000000000cafe")
+	state := evm.NewPebbleStateDB(app.db)
+	state.CreateAccount(contract)
+	state.SetCode(contract, common.FromHex("0x60006000a000"), 0) // LOG0 then STOP
+	if err := state.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	tx := types.NewTx(&types.LegacyTx{
+		Nonce:    0,
+		GasPrice: new(big.Int),
+		Gas:      100000,
+		To:       &contract,
+	})
+	tx, err := types.SignTx(tx, types.LatestSignerForChainID(chainID), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := tx.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockHash := common.BytesToHash([]byte{0xab})
+	resp, err := app.FinalizeBlock(context.Background(), &abci.FinalizeBlockRequest{
+		Height:          1,
+		Time:            time.Unix(1234, 0),
+		Hash:            blockHash.Bytes(),
+		ProposerAddress: common.HexToAddress("0x000000000000000000000000000000000000beef").Bytes(),
+		Txs:             [][]byte{raw},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.TxResults[0].Code != 0 {
+		t.Fatalf("contract call failed: %s", resp.TxResults[0].Log)
+	}
+
+	for name, storageKey := range map[string][]byte{
+		"block":       ethereumBlockKey(1),
+		"transaction": ethereumTransactionKey(tx.Hash()),
+		"receipt":     ethereumReceiptKey(tx.Hash()),
+		"location":    ethereumTransactionLocationKey(tx.Hash()),
+	} {
+		if value, err := app.db.Get(storageKey); err != nil || len(value) != 0 {
+			t.Fatalf("%s persisted before Commit: value=%x err=%v", name, value, err)
+		}
+	}
+
+	if _, err := app.Commit(context.Background(), &abci.CommitRequest{}); err != nil {
+		t.Fatal(err)
+	}
+
+	block, found, err := app.EthereumBlockByNumber(1)
+	if err != nil || !found {
+		t.Fatalf("load block: found=%v err=%v", found, err)
+	}
+	if block.Hash != blockHash || block.Number != 1 || block.Timestamp != 1234 {
+		t.Fatalf("unexpected block metadata: %+v", block)
+	}
+	if len(block.Transactions) != 1 || block.Transactions[0] != tx.Hash() {
+		t.Fatalf("block transactions = %v, want [%s]", block.Transactions, tx.Hash())
+	}
+	if block.GasUsed != uint64(resp.TxResults[0].GasUsed) || block.StateRoot != common.BytesToHash(resp.AppHash) {
+		t.Fatalf("block execution metadata: gasUsed=%d stateRoot=%s", block.GasUsed, block.StateRoot)
+	}
+	if block.LogsBloom == (types.Bloom{}) {
+		t.Fatal("block logs bloom is empty")
+	}
+	byHash, found, err := app.EthereumBlockByHash(blockHash)
+	if err != nil || !found || byHash.Number != 1 {
+		t.Fatalf("load block by hash: block=%+v found=%v err=%v", byHash, found, err)
+	}
+
+	storedTx, found, err := app.EthereumTransactionByHash(tx.Hash())
+	if err != nil || !found {
+		t.Fatalf("load transaction: found=%v err=%v", found, err)
+	}
+	var decoded types.Transaction
+	if err := decoded.UnmarshalBinary(storedTx.Raw); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Hash() != tx.Hash() || storedTx.BlockHash != blockHash || storedTx.TransactionIndex != 0 {
+		t.Fatalf("unexpected stored transaction: %+v", storedTx)
+	}
+
+	receipt, found, err := app.EthereumReceiptByHash(tx.Hash())
+	if err != nil || !found {
+		t.Fatalf("load receipt: found=%v err=%v", found, err)
+	}
+	if receipt.Status != types.ReceiptStatusSuccessful || receipt.GasUsed == 0 || receipt.CumulativeGasUsed != receipt.GasUsed {
+		t.Fatalf("unexpected receipt execution result: %+v", receipt)
+	}
+	if receipt.From != from || receipt.To == nil || *receipt.To != contract {
+		t.Fatalf("unexpected receipt addresses: from=%s to=%v", receipt.From, receipt.To)
+	}
+	if len(receipt.Logs) != 1 {
+		t.Fatalf("receipt logs = %d, want 1", len(receipt.Logs))
+	}
+	if receipt.LogsBloom == (types.Bloom{}) {
+		t.Fatal("receipt logs bloom is empty")
+	}
+	if receipt.Logs[0].Address != contract || receipt.Logs[0].TxHash != tx.Hash() || receipt.Logs[0].BlockHash != blockHash {
+		t.Fatalf("unexpected stored log: %+v", receipt.Logs[0])
+	}
+
+	location, found, err := app.EthereumTransactionLocationByHash(tx.Hash())
+	if err != nil || !found {
+		t.Fatalf("load transaction location: found=%v err=%v", found, err)
+	}
+	if location.BlockHash != blockHash || location.BlockNumber != 1 || location.TransactionIndex != 0 {
+		t.Fatalf("unexpected transaction location: %+v", location)
+	}
 }
 
 func TestSequentialExecutorTransferAndNonceValidation(t *testing.T) {
@@ -86,6 +281,14 @@ func TestSequentialExecutorTransferAndNonceValidation(t *testing.T) {
 	}
 	if got := resp.TxResults[1].GasUsed; got != 21000 {
 		t.Fatalf("transfer gasUsed = %d, want 21000", got)
+	}
+	failedReceipt, found, err := app.EthereumReceiptByHash(wrongNonce.Hash())
+	if err != nil || !found || failedReceipt.Status != types.ReceiptStatusFailed {
+		t.Fatalf("failed transaction receipt: receipt=%+v found=%v err=%v", failedReceipt, found, err)
+	}
+	successReceipt, found, err := app.EthereumReceiptByHash(transfer.Hash())
+	if err != nil || !found || successReceipt.Status != types.ReceiptStatusSuccessful {
+		t.Fatalf("successful transaction receipt: receipt=%+v found=%v err=%v", successReceipt, found, err)
 	}
 	state := evm.NewPebbleStateDB(app.db)
 	if got := state.GetNonce(from); got != 1 {

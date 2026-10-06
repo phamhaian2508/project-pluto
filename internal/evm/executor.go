@@ -110,6 +110,7 @@ func (e *SequentialExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []
 			continue
 		}
 		evmEnv.SetTxContext(core.NewEVMTxContext(msg))
+		logStart := len(stateDB.GetLogs())
 		snap := stateDB.Snapshot()
 		result, err := core.ApplyMessage(evmEnv, msg, gasPool)
 		if err != nil {
@@ -126,10 +127,10 @@ func (e *SequentialExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []
 			tr.ErrMsg = result.Err.Error()
 		}
 		tr.ReturnData = append([]byte(nil), result.ReturnData...)
-		for _, log := range stateDB.GetLogs() {
-			if log.TxHash == tx.Hash() {
-				tr.Logs = append(tr.Logs, log)
-			}
+		for _, entry := range stateDB.GetLogs()[logStart:] {
+			logCopy := *entry
+			logCopy.TxHash = tx.Hash()
+			tr.Logs = append(tr.Logs, &logCopy)
 		}
 		blockResult.GasUsed += result.UsedGas
 		blockResult.Results[i] = tr

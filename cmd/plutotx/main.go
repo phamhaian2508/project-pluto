@@ -25,10 +25,11 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	plutoconfig "github.com/huyCuong73/pluto/internal/config"
 )
 
 // Phải khớp với chainID trong internal/app/app.go
-const chainID = 1
+const chainID = plutoconfig.EVMChainID
 
 const rpcURL = "http://localhost:26657"
 
