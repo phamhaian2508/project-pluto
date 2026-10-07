@@ -1,9 +1,12 @@
 
-/docs
+/docs/*
+!/docs/foundry-e2e.md
+!/docs/metamask-local-checklist.md
 /.agents
 /.vscode
 /build
-/scripts
+/scripts/*
+!/scripts/foundry-e2e.ps1
 
 /plutod
 *.exe

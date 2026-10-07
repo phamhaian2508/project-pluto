@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	cfg "github.com/cometbft/cometbft/config"
 	"github.com/cometbft/cometbft/crypto"
@@ -18,10 +19,13 @@ import (
 	cmtp2p "github.com/cometbft/cometbft/p2p"
 	cmtprivval "github.com/cometbft/cometbft/privval"
 	cmtproxy "github.com/cometbft/cometbft/proxy"
+	cmtrpclocal "github.com/cometbft/cometbft/rpc/client/local"
 
 	dbm "github.com/cometbft/cometbft-db"
 
 	"github.com/huyCuong73/pluto/internal/app"
+	plutoconfig "github.com/huyCuong73/pluto/internal/config"
+	"github.com/huyCuong73/pluto/internal/ethrpc"
 	"github.com/huyCuong73/pluto/internal/store"
 )
 
@@ -112,8 +116,16 @@ func main() {
 	if err := node.Start(); err != nil {
 		panic(fmt.Errorf("failed to start node: %v", err))
 	}
+	ethereumRPC, err := ethrpc.New(myApp, cmtrpclocal.New(node))
+	if err != nil {
+		panic(fmt.Errorf("failed to create Ethereum JSON-RPC server: %w", err))
+	}
+	if err := ethereumRPC.Start(plutoconfig.EthereumRPCListenAddr); err != nil {
+		panic(fmt.Errorf("failed to start Ethereum JSON-RPC server: %w", err))
+	}
 
 	logger.Info("Node Started", "home", homeDir)
+	logger.Info("Ethereum JSON-RPC Started", "address", plutoconfig.EthereumRPCListenAddr)
 
 	// Chờ tín hiệu shutdown
 	c := make(chan os.Signal, 1)
@@ -121,6 +133,11 @@ func main() {
 	<-c
 
 	logger.Info("Stopping Node...")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := ethereumRPC.Close(shutdownCtx); err != nil {
+		logger.Error("Failed to stop Ethereum JSON-RPC", "err", err)
+	}
+	shutdownCancel()
 	cancel() // Dừng node
 	node.Stop()
 	node.Wait()
