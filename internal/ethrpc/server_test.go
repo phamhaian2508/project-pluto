@@ -74,6 +74,7 @@ func TestHTTPJSONRPCReadMethods(t *testing.T) {
 		{"gas price", "eth_gasPrice", []any{}, expectJSON("0x0")},
 		{"priority fee", "eth_maxPriorityFeePerGas", []any{}, expectJSON("0x0")},
 		{"balance", "eth_getBalance", []any{to, "latest"}, expectJSON("0x5")},
+		{"balance by numeric block tag", "eth_getBalance", []any{to, "0x0"}, expectJSON("0x5")},
 		{"nonce", "eth_getTransactionCount", []any{from, "latest"}, expectJSON("0x1")},
 		{"code", "eth_getCode", []any{to, "latest"}, expectJSON("0x")},
 		{"storage", "eth_getStorageAt", []any{to, common.Hash{}, "latest"}, expectJSON(common.Hash{}.Hex())},
@@ -156,6 +157,21 @@ func TestHTTPJSONRPCReadMethods(t *testing.T) {
 	}
 	if !bytes.Equal(broadcaster.raw, raw) {
 		t.Fatalf("mempool received %x, want %x", broadcaster.raw, raw)
+	}
+}
+
+func TestStateReadRejectsBlockBeyondHead(t *testing.T) {
+	application, _, address := rpcTestApp(t)
+	server, err := New(application)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	response := rpcRequest(t, httpServer.URL, "eth_getBalance", []any{address, "0x1"})
+	if response.Error == nil {
+		t.Fatalf("expected future block tag error, got result %s", response.Result)
 	}
 }
 

@@ -435,7 +435,11 @@ func (api *EthAPI) requireLatest(block *gethrpc.BlockNumberOrHash) error {
 		if err != nil {
 			return err
 		}
-		if resolved != api.app.CurrentHeight() {
+		// Wallets may pin read requests to a recently observed block number.
+		// Pluto currently keeps only the latest state snapshot, so serve those
+		// reads from the current state when the requested height is not in the
+		// future. This is compatibility behavior, not historical-state support.
+		if resolved > api.app.CurrentHeight() {
 			return errors.New("historical state is not available")
 		}
 		return nil
