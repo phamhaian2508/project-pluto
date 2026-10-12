@@ -14,8 +14,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	gethrpc "github.com/ethereum/go-ethereum/rpc"
-	"github.com/huyCuong73/pluto/internal/app"
-	plutoconfig "github.com/huyCuong73/pluto/internal/config"
+	"github.com/phamhaian2508/project-pluto/internal/app"
+	plutoconfig "github.com/phamhaian2508/project-pluto/internal/config"
 )
 
 var rpcChainID = big.NewInt(plutoconfig.EVMChainID)

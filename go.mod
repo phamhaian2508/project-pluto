@@ -1,4 +1,4 @@
-module github.com/huyCuong73/pluto
+module github.com/phamhaian2508/project-pluto
 
 go 1.24.1
 

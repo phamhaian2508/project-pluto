@@ -9,7 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/huyCuong73/pluto/internal/evm"
+	"github.com/phamhaian2508/project-pluto/internal/evm"
 )
 
 // EthereumBlock stores the Ethereum-facing metadata for a committed block.

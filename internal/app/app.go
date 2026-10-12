@@ -15,9 +15,9 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/params"
-	plutoconfig "github.com/huyCuong73/pluto/internal/config"
-	"github.com/huyCuong73/pluto/internal/evm"
-	"github.com/huyCuong73/pluto/internal/store"
+	plutoconfig "github.com/phamhaian2508/project-pluto/internal/config"
+	"github.com/phamhaian2508/project-pluto/internal/evm"
+	"github.com/phamhaian2508/project-pluto/internal/store"
 )
 
 const (

@@ -10,7 +10,7 @@ import (
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	cmttypes "github.com/cometbft/cometbft/types"
 	gethrpc "github.com/ethereum/go-ethereum/rpc"
-	"github.com/huyCuong73/pluto/internal/app"
+	"github.com/phamhaian2508/project-pluto/internal/app"
 )
 
 type TxBroadcaster interface {
