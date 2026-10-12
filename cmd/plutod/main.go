@@ -23,10 +23,10 @@ import (
 
 	dbm "github.com/cometbft/cometbft-db"
 
-	"github.com/huyCuong73/pluto/internal/app"
-	plutoconfig "github.com/huyCuong73/pluto/internal/config"
-	"github.com/huyCuong73/pluto/internal/ethrpc"
-	"github.com/huyCuong73/pluto/internal/store"
+	"github.com/phamhaian2508/project-pluto/internal/app"
+	plutoconfig "github.com/phamhaian2508/project-pluto/internal/config"
+	"github.com/phamhaian2508/project-pluto/internal/ethrpc"
+	"github.com/phamhaian2508/project-pluto/internal/store"
 )
 
 var homeDir string

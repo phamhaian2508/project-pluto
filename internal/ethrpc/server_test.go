@@ -19,8 +19,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/huyCuong73/pluto/internal/app"
-	plutoconfig "github.com/huyCuong73/pluto/internal/config"
+	"github.com/phamhaian2508/project-pluto/internal/app"
+	plutoconfig "github.com/phamhaian2508/project-pluto/internal/config"
 )
 
 type rpcResponse struct {
