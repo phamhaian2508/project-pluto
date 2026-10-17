@@ -1,6 +1,7 @@
 package evm
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math/big"
 	"runtime"
@@ -8,11 +9,11 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/holiman/uint256"
 )
 
@@ -53,11 +54,25 @@ const (
 	MVNonce
 	MVCode
 	MVStorage
+	// MVAccount is a conservative account-wide dependency. StateDB operations
+	// that can create, delete, or change account emptiness also record this key
+	// so those effects cannot be missed by optimistic validation.
+	MVAccount
+	MVStorageRoot
 )
 
 type versionShard struct {
 	sync.RWMutex
 	versions map[MVKey]uint64
+	history  map[MVKey][]MVVersionRecord
+}
+
+type MVVersionRecord struct {
+	TxIndex     int
+	Incarnation uint64
+	Version     uint64
+	Value       []byte
+	Deleted     bool
 }
 
 // The current S analyzer supports transfers, which touch at most three keys.
@@ -91,8 +106,41 @@ func NewMVMemory() *MVMemory {
 	m := &MVMemory{}
 	for i := range m.shards {
 		m.shards[i].versions = make(map[MVKey]uint64)
+		m.shards[i].history = make(map[MVKey][]MVVersionRecord)
 	}
 	return m
+}
+
+// ReadBefore returns the latest accepted version produced by a transaction
+// earlier than txIndex. The value is copied so callers cannot mutate MVMemory.
+func (m *MVMemory) ReadBefore(key MVKey, txIndex int) (MVVersionRecord, bool) {
+	shard := m.shard(key)
+	shard.RLock()
+	history := shard.history[key]
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].TxIndex < txIndex {
+			record := history[i]
+			record.Value = append([]byte(nil), record.Value...)
+			shard.RUnlock()
+			return record, true
+		}
+	}
+	shard.RUnlock()
+	return MVVersionRecord{}, false
+}
+
+func (m *MVMemory) CommitTransaction(txIndex int, incarnation uint64, writes map[MVKey][]byte) {
+	for key, value := range writes {
+		shard := m.shard(key)
+		shard.Lock()
+		version := shard.versions[key] + 1
+		shard.versions[key] = version
+		shard.history[key] = append(shard.history[key], MVVersionRecord{
+			TxIndex: txIndex, Incarnation: incarnation, Version: version,
+			Value: append([]byte(nil), value...), Deleted: value == nil,
+		})
+		shard.Unlock()
+	}
 }
 
 func (m *MVMemory) shard(key MVKey) *versionShard {
@@ -173,24 +221,203 @@ type TxState struct {
 	Incarnation uint64
 	ReadSet     []MVKey
 	WriteSet    []MVKey
+	reads       map[MVKey]struct{}
+	writes      map[MVKey]struct{}
 }
 
 var _ vm.StateDB = (*TxState)(nil)
 
 func newTxState(base *PebbleStateDB, txIndex int, incarnation uint64, readSet, writeSet []MVKey) *TxState {
-	return &TxState{
-		PebbleStateDB: base.Fork(),
+	txState := &TxState{
+		PebbleStateDB: base.NewOverlay(),
 		TxIndex:       txIndex,
 		Incarnation:   incarnation,
-		ReadSet:       append([]MVKey(nil), readSet...),
-		WriteSet:      append([]MVKey(nil), writeSet...),
+		reads:         make(map[MVKey]struct{}, len(readSet)+8),
+		writes:        make(map[MVKey]struct{}, len(writeSet)+8),
 	}
+	for _, key := range readSet {
+		txState.addReadKey(key)
+	}
+	for _, key := range writeSet {
+		txState.addWriteKey(key)
+	}
+	return txState
 }
 
-// ParallelExecutor speculates only on the sound S subset currently supported
-// by the P/O/S analyzer. O transactions are delegated to the sequential
-// reference at their original position. P remains disabled until certified
-// artifact generation/evaluation is implemented.
+func (s *TxState) addReadKey(key MVKey) {
+	if _, exists := s.reads[key]; exists {
+		return
+	}
+	s.reads[key] = struct{}{}
+	s.ReadSet = append(s.ReadSet, key)
+}
+
+func (s *TxState) addWriteKey(key MVKey) {
+	if _, exists := s.writes[key]; exists {
+		return
+	}
+	s.writes[key] = struct{}{}
+	s.WriteSet = append(s.WriteSet, key)
+}
+
+func (s *TxState) recordRead(key MVKey) {
+	s.addReadKey(key)
+	s.addReadKey(MVKey{Address: key.Address, Kind: MVAccount})
+}
+
+func (s *TxState) recordWrite(key MVKey) {
+	s.addWriteKey(key)
+	s.addWriteKey(MVKey{Address: key.Address, Kind: MVAccount})
+}
+
+func (s *TxState) AccessSets() (reads, writes []MVKey) {
+	return append([]MVKey(nil), s.ReadSet...), append([]MVKey(nil), s.WriteSet...)
+}
+
+func (s *TxState) VersionedWrites() map[MVKey][]byte {
+	_, keys := s.AccessSets()
+	return stateVersionedWrites(s.PebbleStateDB, keys)
+}
+
+func stateVersionedWrites(state *PebbleStateDB, keys []MVKey) map[MVKey][]byte {
+	values := make(map[MVKey][]byte, len(keys))
+	for _, key := range keys {
+		switch key.Kind {
+		case MVBalance:
+			balance := state.GetBalance(key.Address).ToBig()
+			values[key] = balance.FillBytes(make([]byte, 32))
+		case MVNonce:
+			var nonce [8]byte
+			binary.BigEndian.PutUint64(nonce[:], state.GetNonce(key.Address))
+			values[key] = nonce[:]
+		case MVCode:
+			values[key] = state.GetCode(key.Address)
+		case MVStorage:
+			slot := state.GetState(key.Address, key.Slot)
+			if slot != (common.Hash{}) {
+				values[key] = slot.Bytes()
+			}
+		case MVAccount:
+			account := state.getAccount(key.Address)
+			encoded, err := rlp.EncodeToBytes(account)
+			if err == nil {
+				values[key] = encoded
+			}
+		case MVStorageRoot:
+			root := state.GetStorageRoot(key.Address)
+			values[key] = root.Bytes()
+		}
+	}
+	return values
+}
+
+// The wrapper records persistent state dependencies while leaving transient
+// EVM state (refunds, access lists and transient storage) transaction-local.
+func (s *TxState) CreateAccount(addr common.Address) {
+	s.recordWrite(MVKey{Address: addr, Kind: MVAccount})
+	s.PebbleStateDB.CreateAccount(addr)
+}
+
+func (s *TxState) CreateContract(addr common.Address) {
+	s.recordWrite(MVKey{Address: addr, Kind: MVNonce})
+	s.PebbleStateDB.CreateContract(addr)
+}
+
+func (s *TxState) SubBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) uint256.Int {
+	s.recordRead(MVKey{Address: addr, Kind: MVBalance})
+	s.recordWrite(MVKey{Address: addr, Kind: MVBalance})
+	return s.PebbleStateDB.SubBalance(addr, amount, reason)
+}
+
+func (s *TxState) AddBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) uint256.Int {
+	s.recordRead(MVKey{Address: addr, Kind: MVBalance})
+	s.recordWrite(MVKey{Address: addr, Kind: MVBalance})
+	return s.PebbleStateDB.AddBalance(addr, amount, reason)
+}
+
+func (s *TxState) GetBalance(addr common.Address) *uint256.Int {
+	s.recordRead(MVKey{Address: addr, Kind: MVBalance})
+	return s.PebbleStateDB.GetBalance(addr)
+}
+
+func (s *TxState) GetNonce(addr common.Address) uint64 {
+	s.recordRead(MVKey{Address: addr, Kind: MVNonce})
+	return s.PebbleStateDB.GetNonce(addr)
+}
+
+func (s *TxState) SetNonce(addr common.Address, nonce uint64, reason tracing.NonceChangeReason) {
+	s.recordWrite(MVKey{Address: addr, Kind: MVNonce})
+	s.PebbleStateDB.SetNonce(addr, nonce, reason)
+}
+
+func (s *TxState) GetCodeHash(addr common.Address) common.Hash {
+	s.recordRead(MVKey{Address: addr, Kind: MVCode})
+	return s.PebbleStateDB.GetCodeHash(addr)
+}
+
+func (s *TxState) GetCode(addr common.Address) []byte {
+	s.recordRead(MVKey{Address: addr, Kind: MVCode})
+	return s.PebbleStateDB.GetCode(addr)
+}
+
+func (s *TxState) GetCodeSize(addr common.Address) int {
+	s.recordRead(MVKey{Address: addr, Kind: MVCode})
+	return s.PebbleStateDB.GetCodeSize(addr)
+}
+
+func (s *TxState) SetCode(addr common.Address, code []byte, reason tracing.CodeChangeReason) []byte {
+	s.recordWrite(MVKey{Address: addr, Kind: MVCode})
+	return s.PebbleStateDB.SetCode(addr, code, reason)
+}
+
+func (s *TxState) GetStateAndCommittedState(addr common.Address, slot common.Hash) (common.Hash, common.Hash) {
+	s.recordRead(MVKey{Address: addr, Kind: MVStorage, Slot: slot})
+	return s.PebbleStateDB.GetStateAndCommittedState(addr, slot)
+}
+
+func (s *TxState) GetState(addr common.Address, slot common.Hash) common.Hash {
+	s.recordRead(MVKey{Address: addr, Kind: MVStorage, Slot: slot})
+	return s.PebbleStateDB.GetState(addr, slot)
+}
+
+func (s *TxState) SetState(addr common.Address, slot, value common.Hash) common.Hash {
+	s.recordWrite(MVKey{Address: addr, Kind: MVStorage, Slot: slot})
+	return s.PebbleStateDB.SetState(addr, slot, value)
+}
+
+func (s *TxState) GetStorageRoot(addr common.Address) common.Hash {
+	s.recordRead(MVKey{Address: addr, Kind: MVStorageRoot})
+	return s.PebbleStateDB.GetStorageRoot(addr)
+}
+
+func (s *TxState) SelfDestruct(addr common.Address) uint256.Int {
+	s.recordRead(MVKey{Address: addr, Kind: MVBalance})
+	s.recordWrite(MVKey{Address: addr, Kind: MVBalance})
+	s.recordWrite(MVKey{Address: addr, Kind: MVAccount})
+	return s.PebbleStateDB.SelfDestruct(addr)
+}
+
+func (s *TxState) SelfDestruct6780(addr common.Address) (uint256.Int, bool) {
+	s.recordRead(MVKey{Address: addr, Kind: MVBalance})
+	s.recordWrite(MVKey{Address: addr, Kind: MVBalance})
+	s.recordWrite(MVKey{Address: addr, Kind: MVAccount})
+	return s.PebbleStateDB.SelfDestruct6780(addr)
+}
+
+func (s *TxState) Exist(addr common.Address) bool {
+	s.recordRead(MVKey{Address: addr, Kind: MVAccount})
+	return s.PebbleStateDB.Exist(addr)
+}
+
+func (s *TxState) Empty(addr common.Address) bool {
+	s.recordRead(MVKey{Address: addr, Kind: MVAccount})
+	return s.PebbleStateDB.Empty(addr)
+}
+
+// ParallelExecutor speculates on isolated EVM state overlays and resolves
+// results in canonical transaction order. A narrower direct S path handles
+// blocks made entirely of certified zero-fee EOA transfers. P artifacts remain
+// disabled until certified artifact generation/evaluation is implemented.
 type ParallelExecutor struct {
 	ChainConfig *params.ChainConfig
 	ChainID     *big.Int
@@ -204,7 +431,7 @@ func NewParallelExecutor(config *params.ChainConfig, chainID *big.Int, workers i
 	return &ParallelExecutor{ChainConfig: config, ChainID: new(big.Int).Set(chainID), Workers: workers}
 }
 
-func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*types.Transaction) (*BlockResult, error) {
+func (e *ParallelExecutor) executeStaticBlock(base StateReader, env BlockEnv, txs []*types.Transaction, accesses []staticTransfer) (*BlockResult, error) {
 	stateDB, ok := base.(*PebbleStateDB)
 	if !ok {
 		return nil, fmt.Errorf("parallel executor requires *PebbleStateDB, got %T", base)
@@ -254,43 +481,7 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 	var incarnationTotal, abortTotal, staticCount, parallelCount, opaqueCount float64
 
 	for i := 0; i < len(txs); {
-		analyzeStart := time.Now()
-		access, isStatic := e.staticTransferAccess(base, txs[i], env.BaseFee)
-		analyzeNanos += time.Since(analyzeStart).Nanoseconds()
-		if !isStatic {
-			// Keep opaque transactions exactly at their consensus position.
-			end := i + 1
-			for end < len(txs) {
-				analyzeStart = time.Now()
-				if _, nextStatic := e.staticTransferAccess(base, txs[end], env.BaseFee); nextStatic {
-					analyzeNanos += time.Since(analyzeStart).Nanoseconds()
-					break
-				}
-				analyzeNanos += time.Since(analyzeStart).Nanoseconds()
-				end++
-			}
-			opaqueCount += float64(end - i)
-			segmentEnv := env
-			segmentEnv.GasLimit = remainingGas
-			execStart := time.Now()
-			segment, err := sequential.ExecuteBlock(stateDB, segmentEnv, txs[i:end])
-			executeNanos += time.Since(execStart).Nanoseconds()
-			if err != nil {
-				return nil, fmt.Errorf("sequential O segment [%d,%d): %w", i, end, err)
-			}
-			for j, txResult := range segment.Results {
-				txResult.Index = i + j
-				result.Results[i+j] = txResult
-			}
-			result.GasUsed += segment.GasUsed
-			if segment.GasUsed > remainingGas {
-				return nil, fmt.Errorf("sequential segment consumed %d gas with %d remaining", segment.GasUsed, remainingGas)
-			}
-			remainingGas -= segment.GasUsed
-			i = end
-			continue
-		}
-
+		access := accesses[i]
 		// Form a deterministic, contiguous, conflict-free S wave. The static
 		// access list contains sender/recipient balances and sender nonce.
 		wave := []int{i}
@@ -301,15 +492,13 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 		// the worker count caused a barrier after every handful of transactions,
 		// so amortize scheduling and validation across several tasks per worker.
 		// The address conflict check remains the safety boundary for a wave.
-		waveLimit := workers * 32
+		waveLimit := workers * 128
 		if waveLimit < workers { // protect against integer overflow
 			waveLimit = workers
 		}
 		for j := i + 1; j < len(txs) && len(wave) < waveLimit; j++ {
-			analyzeStart = time.Now()
-			next, nextStatic := e.staticTransferAccess(base, txs[j], env.BaseFee)
-			analyzeNanos += time.Since(analyzeStart).Nanoseconds()
-			if !nextStatic || reservedGas > remainingGas || txs[j].Gas() > remainingGas-reservedGas || used[next.sender] || used[next.recipient] {
+			next := accesses[j]
+			if (next.sender == (common.Address{}) && next.recipient == (common.Address{})) || reservedGas > remainingGas || txs[j].Gas() > remainingGas-reservedGas || used[next.sender] || used[next.recipient] {
 				break
 			}
 			wave = append(wave, j)
@@ -378,7 +567,9 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 		}
 		wg.Wait()
 		executeNanos += time.Since(execStart).Nanoseconds()
-		parallelCount += float64(len(wave))
+		if workerCount > 1 && len(wave) > 1 {
+			parallelCount += float64(len(wave))
+		}
 
 		// Validate and resolve strictly by original TxIndex, independent of
 		// worker completion order.
@@ -408,11 +599,11 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 				remainingGas -= resolved.GasUsed
 				result.GasUsed += resolved.GasUsed
 				resolveStart := time.Now()
-				if err := applyStaticTransfer(stateDB, txs[attempt.index], attempt.access, attempt.value, e.ChainConfig, env); err != nil {
+				if err := applyStaticTransfer(stateDB, txs[attempt.index], attempt.access, attempt.value, env.Coinbase); err != nil {
 					return nil, fmt.Errorf("resolve S tx %d: %w", attempt.index, err)
 				}
 				access := attempt.access
-				versions.CommitSet(access.writes)
+				versions.CommitTransaction(attempt.index, attempt.incarnation, stateVersionedWrites(stateDB, access.writes.keys[:access.writes.len]))
 				resolveNanos += time.Since(resolveStart).Nanoseconds()
 			}
 		}
@@ -456,7 +647,8 @@ func (e *ParallelExecutor) staticTransferAccess(base StateReader, tx *types.Tran
 	}
 	signer := types.LatestSignerForChainID(e.ChainID)
 	sender, err := types.Sender(signer, tx)
-	if err != nil || len(base.Code(sender)) != 0 || len(base.Code(*tx.To())) != 0 || isPrecompileAddress(*tx.To()) {
+	stateDB, ok := base.(*PebbleStateDB)
+	if err != nil || !ok || len(stateDB.getAccount(sender).CodeHash) != 0 || len(stateDB.getAccount(*tx.To()).CodeHash) != 0 || isPrecompileAddress(*tx.To()) {
 		return staticTransfer{}, false
 	}
 	access := staticTransfer{sender: sender, recipient: *tx.To()}
@@ -509,20 +701,11 @@ func evaluateStaticTransfer(tx *types.Transaction, sender, recipient *Account) (
 // effects as geth's 21,000-gas EOA call. This fast path is only reachable for
 // legacy, zero-fee, empty-calldata transfers to non-contract, non-precompile
 // addresses; all other transactions use ApplyMessage.
-func applyStaticTransfer(state *PebbleStateDB, tx *types.Transaction, access staticTransfer, value *uint256.Int, chainConfig *params.ChainConfig, env BlockEnv) error {
+func applyStaticTransfer(state *PebbleStateDB, tx *types.Transaction, access staticTransfer, value *uint256.Int, coinbase common.Address) error {
 	if value == nil {
 		return fmt.Errorf("static transfer has no validated value")
 	}
-	zero := new(uint256.Int)
-	state.SubBalance(access.sender, zero, tracing.BalanceDecreaseGasBuy)
-	rules := chainConfig.Rules(big.NewInt(env.Height), true, env.Time)
-	state.Prepare(rules, access.sender, env.Coinbase, tx.To(), vm.ActivePrecompiles(rules), tx.AccessList())
-	state.SetNonce(access.sender, tx.Nonce()+1, tracing.NonceChangeEoACall)
-	core.Transfer(state, access.sender, access.recipient, value)
-	state.AddBalance(access.sender, zero, tracing.BalanceIncreaseGasReturn)
-	state.AddBalance(env.Coinbase, zero, tracing.BalanceIncreaseRewardTransactionFee)
-	state.Finalise(true)
-	return nil
+	return state.ApplyEOATransfer(access.sender, access.recipient, coinbase, tx.Nonce(), value)
 }
 
 func isPrecompileAddress(address common.Address) bool {

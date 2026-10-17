@@ -1,24 +1,24 @@
 # Báo cáo phần thực thi giao dịch song song của Pluto
 
-**Ngày:** 15/10/2026
+**Ngày:** 17/10/2026
 
 **Mục đích:** Tóm tắt phần đã làm, cách kiểm tra và phần còn lại bằng ngôn ngữ dễ hiểu.
 
 ## 1. Tóm tắt ngắn
 
-Pluto hiện có một bản thử nghiệm đầu tiên để xử lý song song **một nhóm giao dịch chuyển GO rất đơn giản**. Các giao dịch hợp đồng thông minh vẫn chạy theo cách tuần tự cũ. Chế độ song song phải được bật thủ công; mặc định node vẫn dùng engine tuần tự.
+Pluto hiện có executor lạc quan thử nghiệm: worker chạy giao dịch EVM trên overlay riêng, sau đó bộ phân giải kiểm tra và chấp nhận kết quả theo thứ tự block. Nếu một giao dịch đọc state đã bị giao dịch trước thay đổi, lần chạy thử bị bỏ và toàn bộ giao dịch được chạy lại trên state mới. Block chỉ gồm giao dịch chuyển EOA tĩnh đủ điều kiện vẫn dùng đường S trực tiếp ít cấp phát hơn. Chế độ song song cần bật thủ công; mặc định node vẫn dùng engine tuần tự.
 
-Phần mới đã được so sánh với engine tuần tự của Pluto và geth trong các bài kiểm tra, đồng thời đã chạy test, race test, vet và build. Tuy nhiên, benchmark hiện tại cho thấy workload chuyển tiền độc lập được thử **chậm hơn khoảng 15% khi dùng 4 worker**. Vì vậy, đây là nền móng để tiếp tục phát triển, chưa phải bằng chứng rằng Pluto đã tăng tốc giao dịch.
+Phần này được đối chiếu với engine tuần tự của Pluto và geth, có kiểm thử xung đột/ chạy lại, và đã chạy race test. Benchmark chuyển tiền độc lập còn dao động theo kích thước block và số worker; chưa có bằng chứng ổn định rằng 4 worker luôn nhanh hơn. Kết quả hiệu năng được ghi ở mục 6.
 
 ## 2. Hiểu đơn giản cơ chế mới
 
 Một block có thứ tự giao dịch cố định. Pluto vẫn giữ thứ tự đó làm chuẩn để tính kết quả cuối cùng.
 
-1. Pluto xem từng giao dịch có đủ đơn giản và dự đoán được để chạy song song hay không.
-2. Các giao dịch chuyển tiền độc lập, không đụng cùng tài khoản, có thể được worker tính cùng lúc.
-3. Những giao dịch có khả năng ảnh hưởng lẫn nhau được xếp vào lượt phù hợp, rồi kiểm tra theo đúng thứ tự ban đầu.
-4. Giao dịch gọi hoặc tạo hợp đồng thông minh chưa được chạy song song; chúng quay về engine EVM tuần tự hiện có.
-5. Kết quả sau cùng phải khớp với engine tuần tự. Worker không tự ghi xuống PebbleDB.
+1. Mỗi worker chạy một giao dịch trên `TxState` riêng; dữ liệu chưa sửa được đọc từ state block bất biến.
+2. Worker ghi lại tập khóa đã đọc và ghi, kèm phiên bản quan sát được.
+3. Bộ phân giải xét kết quả theo `TxIndex`. Kết quả còn hợp lệ được áp dụng; kết quả đọc state cũ bị hủy và chạy lại trên state mới nhất.
+4. Cả giao dịch hợp đồng cũng có thể được chạy thử đồng thời. Các giao dịch phụ thuộc nhau có thể phải chạy lại; loại P vẫn chưa được bật.
+5. Chỉ luồng block theo thứ tự được sửa state chuẩn. Worker không ghi trực tiếp xuống PebbleDB.
 
 Có thể hình dung worker là nhiều người tính trước các phép tính độc lập, còn một bộ kiểm tra cuối cùng duyệt và chốt kết quả theo thứ tự của block.
 
@@ -27,24 +27,22 @@ Có thể hình dung worker là nhiều người tính trước các phép tính
 | Phần | Đã làm |
 |---|---|
 | Thiết kế | Viết thiết kế P/O/S và sơ đồ luồng trong `design/m4-hybrid-parallel-execution.md`. |
-| Phân loại giao dịch | **S** là giao dịch có thể chứng minh trước những tài khoản sẽ đọc/ghi; **O** là giao dịch phức tạp, chạy bằng EVM tuần tự; **P** là loại cần một bản mô tả thực thi có kiểm chứng và hiện chưa bật. |
-| Phạm vi chạy song song | Hỗ trợ hẹp giao dịch chuyển GO thông thường giữa tài khoản EOA: không có calldata, đủ điều kiện gas, phí bằng 0 trong cấu hình hiện tại, đúng chain ID, và không gửi đến precompile hoặc hợp đồng. |
-| Cách ly trạng thái | Thêm state fork/overlay để một lần thực thi có vùng trạng thái riêng, tránh ghi trực tiếp vào trạng thái dùng chung. |
-| Bộ nhớ phiên bản | Thêm MVMemory có khóa chia shard để theo dõi phiên bản một số dữ liệu tài khoản và bảo vệ truy cập đồng thời. |
-| Worker và kiểm tra xung đột | Thêm worker pool, xếp các giao dịch S không xung đột vào cùng đợt, kiểm tra phiên bản và có cơ chế chạy lại khi kết quả không còn phù hợp. |
-| Chốt kết quả | Nhận kết quả theo thứ tự giao dịch trong block. Việc ghi bền vững vẫn đi qua luồng Commit hiện có, không để worker tự ghi DB. |
+| Phân loại giao dịch | **S** là chuyển EOA có tập truy cập hẹp được chứng minh; **O** là giao dịch thực thi bằng EVM trên overlay; **P** cần artifact thực thi được chứng nhận và hiện chưa bật. |
+| Cách ly trạng thái | `TxState` cài `vm.StateDB`, đọc xuyên từ state gốc bất biến và giữ cache/journal/thay đổi riêng cho giao dịch. |
+| Bộ nhớ phiên bản | MVMemory chia shard, giữ phiên bản và giá trị đã chấp nhận theo khóa, `TxIndex`, incarnation; có thể đọc phiên bản mới nhất của giao dịch đứng trước. |
+| Worker và kiểm tra xung đột | Worker pool chạy thử theo lô. Mỗi lần chạy được đánh dấu `ESTIMATE`; bộ phân giải kiểm tra lần lượt và đánh dấu hủy/chạy lại khi tập đọc cũ. |
+| Chốt kết quả | State delta được áp dụng theo thứ tự giao dịch; app tiếp tục ghi state và metadata bằng batch Commit hiện có. Worker không tự ghi DB. |
 | Cấu hình node | Thêm tùy chọn `--executor=sequential|parallel` và `--workers=N`; mặc định vẫn là `sequential`. |
 | Số liệu | Ghi số lượng giao dịch theo loại, worker, số lần chạy lại/hủy và thời gian các pha để hỗ trợ chẩn đoán, đo benchmark. |
 
 ## 4. Phần chưa hoàn thành
 
-- **Chưa xử lý song song tổng quát EVM.** Counter, ERC-20, AMM, tạo hợp đồng, gọi hợp đồng và lời gọi lồng nhau hiện vẫn đi tuần tự.
-- Loại **P** chưa có bộ phân tích tạo artifact/certificate và bộ kiểm tra đủ để áp dụng an toàn; hiện không có giao dịch nào được xử lý theo P.
-- Phạm vi **S** còn nhỏ, chủ yếu cho chuyển tiền EOA đơn giản. Chưa thể suy rộng kết quả này thành tương thích đầy đủ với mọi loại giao dịch Ethereum.
-- Vì lịch hiện ưu tiên gom giao dịch không xung đột, test hiện chưa chứng minh hiệu năng tốt trên workload có nhiều ví nóng hoặc nhiều xung đột.
-- Tiêu chí “nhanh hơn tuần tự” chưa đạt trong benchmark hiện có.
+- Loại **P** chưa có bộ sinh/chứng nhận artifact và hiện vẫn tắt.
+- Executor song song còn là prototype; workload EVM có phụ thuộc cao có thể bị chạy lại nhiều lần, nên chạy song song không đồng nghĩa mọi giao dịch đều tiết kiệm thời gian.
+- Differential test hiện có Counter, ERC-20, AMM, gọi lồng nhau, revert/out-of-gas và block trộn 10.000 giao dịch; chưa chứng minh toàn bộ ngữ nghĩa EVM cho mọi hợp đồng.
+- Benchmark hiện chưa chứng minh mức tăng thông lượng ổn định cho cấu hình từ 4 worker trở lên; xem số liệu và giới hạn mẫu ở mục 6.
 
-Do đó, chưa nên ghi M4 là hoàn thành toàn bộ. Có thể mô tả là đã có thiết kế và prototype song song hẹp, đã tích hợp tùy chọn và kiểm thử ban đầu.
+Do đó, phần cơ chế M4 đã được mở rộng đáng kể và có kiểm thử; tiêu chí hiệu năng vẫn chưa được chứng minh. Nên báo cáo riêng độ đúng đắn, phạm vi hỗ trợ và hiệu năng, không gộp chúng thành một tuyên bố “nhanh hơn”.
 
 ## 5. Kiểm tra đã chạy
 
@@ -59,18 +57,19 @@ go test ./test/harness -run '^$' -fuzz '^FuzzDifferentialHarnessSeededMixedBlock
 git diff --check
 ```
 
-Kết quả fuzz chạy 15 giây hoàn tất với 654 lần thực thi. Differential harness còn có workload hỗn hợp tất định 10.000 giao dịch để so sánh executor Pluto và geth; đây là workload kiểm thử, không có nghĩa mọi giao dịch trong đó đều được thực thi song song.
+Kết quả fuzz chạy 15 giây hoàn tất với 676 lần thực thi, không phát hiện sai lệch. Differential harness còn có workload hỗn hợp tất định 10.000 giao dịch để so sánh executor Pluto tuần tự/song song; đây là workload kiểm thử, không có nghĩa mọi giao dịch trong đó đều được thực thi đồng thời.
 
 ## 6. Kết quả benchmark hiện tại
 
-Đo trên workload gồm 128 giao dịch chuyển tiền độc lập, lặp 30 lần, với 4 worker:
+Đo trên cùng máy (Windows amd64, Go 1.27.1, Intel Core i7-11800H), bằng benchmark 128, 512 và 1.024 giao dịch chuyển độc lập. Mỗi cấu hình chạy 30 lượt trong lần đo này; số liệu dưới đây là kết quả của lần chạy gần nhất, nên có thể dao động theo tải máy:
 
-| Cách chạy | Thời gian mỗi lượt | Bộ nhớ cấp phát | Số lần cấp phát |
-|---|---:|---:|---:|
-| Tuần tự | 7.646.983 ns/op | 1.278.245 B/op | 15.657 allocs/op |
-| Song song, 4 worker | 8.787.327 ns/op | 1.504.712 B/op | 16.378 allocs/op |
+| Số giao dịch | Tuần tự | Song song, 4 worker | Thay đổi thời gian | Bộ nhớ tuần tự → song song |
+|---:|---:|---:|---:|---:|
+| 128 | 1,085 ms | 1,162 ms | Chậm hơn 7,1% | 598 KB → 964 KB |
+| 512 | 5,029 ms | 4,264 ms | Nhanh hơn 15,2% | 2,42 MB → 4,00 MB |
+| 1.024 | 10,107 ms | 8,982 ms | Nhanh hơn 11,1% | 4,84 MB → 8,00 MB |
 
-Trong phép đo này, bản song song chậm hơn khoảng 15% và dùng nhiều bộ nhớ hơn. Đây là kết quả cần báo cáo trung thực; hiện chưa có cơ sở nói prototype đã tăng tốc. Cần profiling và thử nhiều kích thước block, số worker, workload ít xung đột/nhiều xung đột trước khi kết luận thêm.
+Kết quả cho thấy chi phí worker và resolver chưa đáng giá ở block 128; block 512 và 1.024 có cải thiện trong phép đo này. Vì vậy mục tiêu hiệu năng mới đạt một phần, chưa thể khẳng định song song luôn nhanh hơn. Song song dùng nhiều bộ nhớ hơn khoảng 61–65%. Số worker tăng không bảo đảm tăng tốc: lần đo này, 4 worker cho kết quả tốt nhất ở block 512/1.024, còn block 128 vẫn chậm hơn tuần tự. Đây là benchmark vi mô trên máy phát triển, nên chưa đủ để kết luận hiệu năng production; cần đo lặp lại và profiling trên cấu hình node thực tế.
 
 ## 7. Cách chạy
 
@@ -78,17 +77,18 @@ Chạy node bằng engine tuần tự mặc định:
 
 ```powershell
 go run ./cmd/plutod --home .\.pluto-home
+```
 
 Bật prototype song song với 4 worker:
 
 ```powershell
 go run ./cmd/plutod --home .\.pluto-home --executor=parallel --workers=4
-
+```
 
 Chạy bài so sánh benchmark tuần tự và song song:
 
 ```powershell
-go test ./test/harness -run '^$' -bench '^BenchmarkSequentialVsParallelIndependentTransfers$' -benchtime=30x -count=1
+go test ./test/harness -run '^$' -bench '^BenchmarkSequentialVsParallelIndependentTransfers$' -benchtime=30x -benchmem -count=1
 ```
 
 ## 8. Tóm tắt tiến độ theo các mục M4
@@ -96,15 +96,15 @@ go test ./test/harness -run '^$' -bench '^BenchmarkSequentialVsParallelIndepende
 | Mục | Tiến độ hiện tại |
 |---|---|
 | M4.1 Thiết kế | Đã viết thiết kế và sơ đồ. |
-| M4.2 TxState/overlay | Đã có state fork/overlay cơ bản; cần mở rộng và rà soát cho các luồng EVM tổng quát. |
-| M4.3 MVMemory | Đã có bản đầu, dùng cho tập khóa hẹp hiện hỗ trợ. |
-| M4.4 Scheduler | Đã có worker pool và xếp lượt cho giao dịch S đơn giản. |
-| M4.5 Read/write set và incarnation | Đã có ở phạm vi prototype; chưa bao phủ toàn bộ hành vi EVM. |
-| M4.6 Validate/retry | Đã có kiểm tra phiên bản và đường chạy lại; cần thêm workload xung đột để kiểm chứng rộng. |
-| M4.7 Commit theo thứ tự | Kết quả được chốt theo thứ tự block và đi qua Commit hiện có; worker không ghi DB. |
-| M4.8 Metrics | Đã thêm số liệu theo block để quan sát các pha. |
+| M4.2 TxState/overlay | Đã được dùng bởi executor EVM thử nghiệm; mỗi attempt chạy trên state riêng và có delta riêng. |
+| M4.3 MVMemory | Có phiên bản và giá trị chấp nhận theo khóa, transaction index và incarnation; có test đọc phiên bản của giao dịch trước. |
+| M4.4 Scheduler | Có worker pool, attempt ở trạng thái `ESTIMATE`, resolver theo thứ tự block và hủy/chạy lại khi dữ liệu đọc cũ. |
+| M4.5 Read/write set và incarnation | Được ghi tự động khi EVM đọc/ghi balance, nonce, code, account và storage; retry tạo incarnation mới. |
+| M4.6 Validate/retry | Đã kiểm tra phiên bản và chạy lại toàn bộ giao dịch phụ thuộc; harness yêu cầu workload Counter chứng minh đã có retry. |
+| M4.7 Commit theo thứ tự | Delta được áp dụng theo `TxIndex`, state root đối chiếu với executor tuần tự; Pebble vẫn ghi bằng batch Commit hiện có. |
+| M4.8 Metrics | Có số liệu phân loại, retry/abort, incarnation, worker và thời gian các pha. |
 | M4.9 Tích hợp lựa chọn executor | Đã có cờ chọn tuần tự/song song và số worker; tuần tự vẫn là mặc định. |
 
 ## 9. Kết luận
 
-Đã có một prototype thực thi song song có kiểm soát cho chuyển tiền đơn giản, cơ chế quay về EVM tuần tự cho trường hợp chưa hỗ trợ, tùy chọn bật/tắt và bộ kiểm thử đối chiếu. Các bài kiểm tra kỹ thuật đang xanh, nhưng benchmark ban đầu chưa cho thấy tăng tốc. Bước tiếp theo nên là đo và tối ưu scheduler/chi phí worker, mở rộng workload xung đột, rồi mới mở rộng phân tích giao dịch hợp đồng theo P/S. Engine tuần tự tiếp tục là mốc tham chiếu và lựa chọn mặc định.
+Đã có executor thử nghiệm dùng overlay cho EVM, xác thực và chạy lại giao dịch phụ thuộc theo thứ tự, cùng đường S tối ưu cho block chuyển EOA đủ điều kiện. Engine tuần tự tiếp tục là mốc tham chiếu và lựa chọn mặc định. Kết quả test chứng minh các workload được liệt kê khớp; benchmark cần đo lặp lại thêm và hiện chưa chứng minh tăng thông lượng ổn định với từ 4 worker.

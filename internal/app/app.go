@@ -221,7 +221,7 @@ func (app *App) ProcessProposal(_ context.Context, req *abci.ProcessProposalRequ
 	}, nil
 }
 
-// FinalizeBlock xử lý các tx trong block (tuần tự)
+// FinalizeBlock executes block transactions through the configured executor.
 func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockRequest) (*abci.FinalizeBlockResponse, error) {
 	if app.pendingBlock != nil {
 		return nil, fmt.Errorf("cannot finalize height %d: height %d is not committed", req.Height, app.pendingBlock.height)

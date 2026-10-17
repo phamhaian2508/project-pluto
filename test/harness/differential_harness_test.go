@@ -507,7 +507,7 @@ func TestDifferentialHarnessParallelStaticTransfersMatchSequentialAndGeth(t *tes
 	}
 }
 
-func TestDifferentialHarnessParallelRoutesContractsThroughOrderedFallback(t *testing.T) {
+func TestDifferentialHarnessParallelRetriesDependentContractTransactions(t *testing.T) {
 	workload := newCounterDifferentialWorkload(t)
 	observations := compareAllExecutors(t, workload,
 		namedExecutor{name: "Pluto sequential", ev: evm.NewSequentialExecutor(newChainConfig(), chainID)},
@@ -519,6 +519,9 @@ func TestDifferentialHarnessParallelRoutesContractsThroughOrderedFallback(t *tes
 	}
 	if parallel.metrics["tx_class_s"] != 1 {
 		t.Fatalf("transfer in contract workload classified as S count = %v, want 1", parallel.metrics["tx_class_s"])
+	}
+	if parallel.metrics["retry_total"] == 0 {
+		t.Fatal("dependent contract workload did not exercise optimistic retry")
 	}
 }
 
