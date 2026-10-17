@@ -29,10 +29,16 @@ import (
 	"github.com/phamhaian2508/project-pluto/internal/store"
 )
 
-var homeDir string
+var (
+	homeDir     string
+	executor    string
+	workerCount int
+)
 
 func init() {
 	flag.StringVar(&homeDir, "home", "", "Path to the home directory")
+	flag.StringVar(&executor, "executor", "sequential", "Block executor: sequential or parallel")
+	flag.IntVar(&workerCount, "workers", 4, "Parallel executor worker count")
 }
 
 // Pebble DB provider
@@ -88,6 +94,9 @@ func main() {
 	myApp, err := app.NewApp(appDBDir, appLogger)
 	if err != nil {
 		panic(fmt.Errorf("failed to create app: %w", err))
+	}
+	if err := myApp.ConfigureExecutor(executor, workerCount); err != nil {
+		panic(fmt.Errorf("configure block executor: %w", err))
 	}
 	defer myApp.Close()
 

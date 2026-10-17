@@ -64,6 +64,8 @@ type App struct {
 	pendingBlock  *pendingBlock
 	txProcessor   *evm.TxProcessor
 	executor      evm.Executor
+	executorMode  string
+	workers       int
 }
 
 type pendingBlock struct {
@@ -161,7 +163,23 @@ func NewApp(dbPath string, logger *slog.Logger) (*App, error) {
 		appHash:       appHash,
 		txProcessor:   evm.NewTxProcessor(chainID.Int64()),
 		executor:      evm.NewSequentialExecutor(newChainConfig(), chainID),
+		executorMode:  "sequential",
+		workers:       4,
 	}, nil
+}
+
+// ConfigureExecutor selects the deterministic block executor. Sequential is
+// the default; parallel remains opt-in while its supported workload is narrow.
+func (app *App) ConfigureExecutor(mode string, workers int) error {
+	if mode != "sequential" && mode != "parallel" {
+		return fmt.Errorf("unknown executor %q (want sequential or parallel)", mode)
+	}
+	if workers < 1 {
+		return fmt.Errorf("worker count must be at least 1")
+	}
+	app.executorMode = mode
+	app.workers = workers
+	return nil
 }
 
 // Info: trả về state hiện tại khi restart node
@@ -247,10 +265,17 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		Coinbase: common.BytesToAddress(req.ProposerAddress), GasLimit: blockGasLimit,
 		Random: common.Hash(rand), GetHash: getHash, BaseFee: new(big.Int), PreviousRoot: app.appHash,
 	}
-	app.executor = evm.NewSequentialExecutor(chainConfig, chainID)
+	if app.executorMode == "parallel" {
+		app.executor = evm.NewParallelExecutor(chainConfig, chainID, app.workers)
+	} else {
+		app.executor = evm.NewSequentialExecutor(chainConfig, chainID)
+	}
 	blockResult, err := app.executor.ExecuteBlock(stateDB, blockEnv, transactions)
 	if err != nil {
 		return nil, fmt.Errorf("execute block: %w", err)
+	}
+	if len(blockResult.Metrics) > 0 {
+		app.logger.Info("block executor metrics", "height", req.Height, "executor", app.executorMode, "workers", app.workers, "metrics", blockResult.Metrics)
 	}
 	for i, result := range blockResult.Results {
 		if preResults[i] != nil {

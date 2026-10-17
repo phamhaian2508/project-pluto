@@ -1,50 +1,58 @@
-# Pluto differential EVM harness
+# Bộ kiểm thử đối chiếu EVM của Pluto
 
-The harness lives outside production packages so running it does not alter node behavior. It creates test-only Pebble state, signs transactions from deterministic accounts, executes the same block through Pluto executors and go-ethereum, and reports the first block/transaction mismatch.
+Bộ kiểm thử nằm ngoài các gói production, nên chạy nó không làm thay đổi cách node hoạt động. Harness tạo trạng thái Pebble chỉ dùng cho test, ký giao dịch từ các tài khoản tất định, chạy cùng một block qua executor của Pluto và go-ethereum, rồi báo giao dịch đầu tiên có kết quả khác nhau.
 
-## Workloads
+## Các loại tải kiểm thử
 
-- deterministic account pools and signed transfer workloads with a configurable hot sender ratio;
-- Counter deploy, increments, storage contention, and forwarded contract calls;
-- ERC-20 deployment and `transfer`;
-- a small constant-product AMM fixture with repeatable `swap(uint256)` calls;
-- revert, out-of-gas, and invalid-nonce transactions;
-- a seeded mixed block with 10,000 transactions.
+- Tập tài khoản tất định và workload chuyển tiền đã ký, có thể đặt tỷ lệ ví gửi thường xuyên.
+- Triển khai Counter, tăng biến đếm, tạo xung đột storage và gọi hợp đồng qua hợp đồng khác.
+- Triển khai ERC-20 và gọi `transfer`.
+- Một AMM tích số không đổi đơn giản, có thể chạy lại các lệnh `swap(uint256)`.
+- Giao dịch revert, hết gas và sai nonce.
+- Block trộn nhiều loại giao dịch với seed cố định, gồm 10.000 giao dịch.
 
-The fixture in `differential_workloads_test.go` implements the behavior of `contracts/SimpleAMM.sol` directly as EVM bytecode, so CI does not need a Solidity compiler. The fixture's reserve values are asserted independently of the geth comparison.
+Fixture trong `differential_workloads_test.go` mô phỏng hành vi của `contracts/SimpleAMM.sol` trực tiếp bằng EVM bytecode, nên CI không cần cài Solidity compiler. Giá trị dự trữ của fixture cũng được kiểm tra độc lập với kết quả so sánh geth.
 
-## Run
+## Cách chạy
 
-Run the full harness, including the 10,000-transaction seeded block:
+Chạy toàn bộ harness, bao gồm block 10.000 giao dịch có seed cố định:
 
 ```powershell
 go test ./test/harness -count=1 -v
 ```
 
-Run the large reproducible comparison by itself:
+Chạy riêng bài đối chiếu lớn có thể tái lập:
 
 ```powershell
 go test ./test/harness -run '^TestDifferentialHarnessTenThousandSeededMixedTransactions$' -count=1 -v
 ```
 
-Run the Go fuzz target for a chosen duration:
+Chạy fuzz test của Go trong khoảng thời gian tùy chọn:
 
 ```powershell
 go test ./test/harness -run '^$' -fuzz '^FuzzDifferentialHarnessSeededMixedBlocks$' -fuzztime=5m
 ```
 
-Run workload benchmarks for transfer, hot-wallet, Counter, ERC-20, and AMM cases:
+Đo benchmark các loại tải chuyển tiền, ví nóng, Counter, ERC-20 và AMM:
 
 ```powershell
 go test ./test/harness -run '^$' -bench '^BenchmarkDifferentialWorkloads$' -benchmem -count=1
 ```
 
-Each generated workload name includes its seed. A failure prints that seed and the first differing block/transaction; Go also saves minimized fuzz failures under `test/harness/testdata/fuzz/` for replay.
+Tên mỗi workload được tạo sẽ có seed đi kèm. Khi gặp lỗi, harness in seed và block/giao dịch đầu tiên bị lệch. Go cũng lưu các lỗi fuzz đã được rút gọn trong `test/harness/testdata/fuzz/` để chạy lại.
 
-## Comparison rules
+## Quy tắc đối chiếu
 
-The harness compares transaction validity/status, gas, return data, logs, balances, nonces, runtime code, and declared storage slots. Pluto executor implementations are also compared against each other including Pluto's deterministic state root. geth computes an Ethereum Merkle Patricia Trie root, while Pluto currently uses a separate application hash, so those two roots are not treated as interchangeable; geth is compared using observable account/contract state instead.
+Harness so sánh tính hợp lệ/trạng thái giao dịch, gas, dữ liệu trả về, log, số dư, nonce, runtime code và các storage slot đã khai báo. Các executor của Pluto cũng được so sánh với nhau, bao gồm state root tất định của Pluto. geth tạo state root theo Ethereum Merkle Patricia Trie, còn Pluto hiện dùng application hash riêng; vì vậy hai loại root này không được xem là cùng định dạng. Với geth, harness so sánh trạng thái tài khoản và hợp đồng có thể quan sát được.
 
-`compareAllExecutors` accepts any implementation of `evm.Executor`. Add the parallel implementation to its executor list when it is available; the harness then compares it against geth and the sequential Pluto baseline using the same signed workload.
+`compareAllExecutors` nhận mọi implementation của `evm.Executor`. Hàm này chạy executor song song của Pluto (chế độ tùy chọn) để đối chiếu với geth và executor tuần tự trên các giao dịch chuyển tiền độc lập, giao dịch hợp đồng được chuyển về xử lý tuần tự và block trộn 10.000 giao dịch có thể tái lập. Bộ phân tích P/O/S hiện chỉ chạy song song các giao dịch chuyển EOA tĩnh trong phạm vi đã chứng minh; tạo hợp đồng và gọi hợp đồng vẫn chạy tuần tự theo loại O.
 
-`mutation_test.go` contains deliberately faulty test-only executors. The tests verify that the comparator catches an accepted invalid transaction and a wrong committed storage value. They do not modify the production executor.
+So sánh engine tuần tự với engine song song dùng 1, 2, 4 và 8 worker trên block có 128, 512 và 1.024 giao dịch chuyển tiền không xung đột:
+
+```powershell
+go test ./test/harness -run '^$' -bench '^BenchmarkSequentialVsParallelIndependentTransfers$' -benchtime=30x -benchmem -count=3
+```
+
+Thời gian tạo Pebble và nạp trạng thái ban đầu không tính vào thời gian benchmark; mỗi lượt vẫn bắt đầu từ trạng thái mới. Đây là benchmark chẩn đoán trên máy cục bộ, không phải bằng chứng rằng toàn bộ EVM đã tăng tốc. Khi chia sẻ kết quả, hãy ghi lại máy, phiên bản Go, số worker, seed và workload.
+
+`mutation_test.go` chứa các executor kiểm thử được cố ý viết sai. Các test xác nhận bộ so sánh phát hiện được giao dịch không hợp lệ bị chấp nhận và giá trị storage bị commit sai. Những executor lỗi này chỉ dùng trong test, không sửa executor production.

@@ -460,9 +460,9 @@ func FuzzDifferentialHarnessSeededMixedBlocks(f *testing.F) {
 	f.Add(uint64(0xdeadbeef))
 	f.Fuzz(func(t *testing.T, seed uint64) {
 		workload := newMixedWorkload(t, seed, 32, 8, 0.7)
-		pluto := runPlutoDifferentialWorkload(t, evm.NewSequentialExecutor(newChainConfig(), chainID), workload)
+		pluto := runPlutoDifferentialWorkload(t, evm.NewParallelExecutor(newChainConfig(), chainID, 4), workload)
 		geth := runGethDifferentialWorkload(t, workload)
-		mismatches := differentialMismatches(workload, "Pluto sequential", pluto, "geth reference", geth)
+		mismatches := differentialMismatches(workload, "Pluto parallel", pluto, "geth reference", geth)
 		if len(mismatches) > 0 {
 			t.Fatalf("seed=%d first mismatch: %s", seed, mismatches[0])
 		}
@@ -472,11 +472,14 @@ func FuzzDifferentialHarnessSeededMixedBlocks(f *testing.F) {
 func TestDifferentialHarnessTenThousandSeededMixedTransactions(t *testing.T) {
 	const seed = 20261012
 	workload := newMixedWorkload(t, seed, 10_000, 16, 0.8)
-	pluto := runPlutoDifferentialWorkload(t, evm.NewSequentialExecutor(newChainConfig(), chainID), workload)
-	geth := runGethDifferentialWorkload(t, workload)
-	mismatches := differentialMismatches(workload, "Pluto sequential", pluto, "geth reference", geth)
-	if len(mismatches) > 0 {
-		t.Fatalf("seed=%d first block/transaction mismatch: %s", seed, mismatches[0])
+	observations := compareAllExecutors(t, workload,
+		namedExecutor{name: "Pluto sequential", ev: evm.NewSequentialExecutor(newChainConfig(), chainID)},
+		namedExecutor{name: "Pluto parallel", ev: evm.NewParallelExecutor(newChainConfig(), chainID, 4)},
+	)
+	pluto := observations["Pluto sequential"]
+	parallel := observations["Pluto parallel"]
+	if parallel.metrics["tx_class_s"] == 0 || parallel.metrics["tx_class_o"] == 0 || parallel.metrics["tx_parallel"] == 0 {
+		t.Fatalf("seed=%d did not exercise both execution paths: S=%v O=%v parallel=%v", seed, parallel.metrics["tx_class_s"], parallel.metrics["tx_class_o"], parallel.metrics["tx_parallel"])
 	}
 	var nativeTransfers, counterCalls, tokenTransfers, revertCalls, outOfGasCalls int
 	for i := 2; i < len(workload.transactions); i++ {

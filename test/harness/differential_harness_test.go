@@ -96,6 +96,7 @@ type differentialObservation struct {
 	accounts     map[common.Address]differentialAccount
 	stateRoot    common.Hash
 	hasStateRoot bool
+	metrics      map[string]float64
 }
 
 func newCounterDifferentialWorkload(t testing.TB) differentialWorkload {
@@ -187,6 +188,7 @@ func runPlutoDifferentialWorkload(t testing.TB, executor evm.Executor, workload 
 	observation := capturePlutoObservation(stateDB, result, workload)
 	observation.stateRoot = common.BytesToHash(result.StateRoot[:])
 	observation.hasStateRoot = true
+	observation.metrics = result.Metrics
 	if err := db.Close(); err != nil {
 		t.Fatalf("close Pluto harness state: %v", err)
 	}
@@ -468,5 +470,83 @@ func TestDifferentialHarnessComparesPlutoExecutorsAndStateRoot(t *testing.T) {
 	)
 	if observations["sequential-a"].stateRoot != observations["sequential-b"].stateRoot {
 		t.Fatalf("same Pluto executor produced different state roots")
+	}
+}
+
+func TestDifferentialHarnessParallelStaticTransfersMatchSequentialAndGeth(t *testing.T) {
+	const transferCount = 32
+	pool := newAccountPool(t, 0x504f53, transferCount*2)
+	transactions := make([]*types.Transaction, transferCount)
+	balances := make(map[common.Address]*big.Int, len(pool))
+	addresses := make([]common.Address, len(pool))
+	for i, account := range pool {
+		balances[account.address] = new(big.Int).SetUint64(1_000_000)
+		addresses[i] = account.address
+	}
+	for i := range transactions {
+		sender, recipient := pool[i*2], pool[i*2+1]
+		transactions[i] = signedTx(t, sender.keyHex, 0, 21_000, &recipient.address, big.NewInt(int64(i+1)), nil)
+	}
+	workload := differentialWorkload{
+		name:            "independent-static-transfers",
+		transactions:    transactions,
+		accounts:        addresses,
+		initialBalances: balances,
+		env:             evm.BlockEnv{Height: 11, Time: 11, GasLimit: blockGasLimit, BaseFee: new(big.Int)},
+	}
+	observations := compareAllExecutors(t, workload,
+		namedExecutor{name: "Pluto sequential", ev: evm.NewSequentialExecutor(newChainConfig(), chainID)},
+		namedExecutor{name: "Pluto parallel", ev: evm.NewParallelExecutor(newChainConfig(), chainID, 4)},
+	)
+	parallel := observations["Pluto parallel"]
+	if parallel.metrics["tx_class_s"] != transferCount {
+		t.Fatalf("parallel S transaction count = %v, want %d", parallel.metrics["tx_class_s"], transferCount)
+	}
+	if parallel.metrics["worker_count"] != 4 {
+		t.Fatalf("parallel worker_count = %v, want 4", parallel.metrics["worker_count"])
+	}
+}
+
+func TestDifferentialHarnessParallelRoutesContractsThroughOrderedFallback(t *testing.T) {
+	workload := newCounterDifferentialWorkload(t)
+	observations := compareAllExecutors(t, workload,
+		namedExecutor{name: "Pluto sequential", ev: evm.NewSequentialExecutor(newChainConfig(), chainID)},
+		namedExecutor{name: "Pluto parallel", ev: evm.NewParallelExecutor(newChainConfig(), chainID, 4)},
+	)
+	parallel := observations["Pluto parallel"]
+	if parallel.metrics["tx_class_o"] != float64(len(workload.transactions)-1) {
+		t.Fatalf("parallel O transaction count = %v, want %d", parallel.metrics["tx_class_o"], len(workload.transactions)-1)
+	}
+	if parallel.metrics["tx_class_s"] != 1 {
+		t.Fatalf("transfer in contract workload classified as S count = %v, want 1", parallel.metrics["tx_class_s"])
+	}
+}
+
+func TestDifferentialHarnessParallelStaticTransferFailuresMatch(t *testing.T) {
+	pool := newAccountPool(t, 0x534641494c, 4)
+	transactions := []*types.Transaction{
+		signedTx(t, pool[0].keyHex, 0, 21_000, &pool[1].address, big.NewInt(2), nil), // insufficient balance
+		signedTx(t, pool[2].keyHex, 1, 21_000, &pool[3].address, big.NewInt(1), nil), // nonce gap
+	}
+	balances := map[common.Address]*big.Int{
+		pool[0].address: big.NewInt(1),
+		pool[2].address: big.NewInt(10),
+	}
+	workload := differentialWorkload{
+		name:            "static-transfer-insufficient-balance-and-nonce-gap",
+		transactions:    transactions,
+		accounts:        []common.Address{pool[0].address, pool[1].address, pool[2].address, pool[3].address},
+		initialBalances: balances,
+		env:             evm.BlockEnv{Height: 12, Time: 12, GasLimit: blockGasLimit, BaseFee: new(big.Int)},
+	}
+	observations := compareAllExecutors(t, workload,
+		namedExecutor{name: "Pluto sequential", ev: evm.NewSequentialExecutor(newChainConfig(), chainID)},
+		namedExecutor{name: "Pluto parallel", ev: evm.NewParallelExecutor(newChainConfig(), chainID, 4)},
+	)
+	parallel := observations["Pluto parallel"]
+	for i, result := range parallel.results {
+		if !result.Invalid || result.GasUsed != 0 {
+			t.Fatalf("parallel invalid transfer tx[%d] = %+v, want invalid with zero gas", i, result)
+		}
 	}
 }
