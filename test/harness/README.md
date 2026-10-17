@@ -45,7 +45,7 @@ Tên mỗi workload được tạo sẽ có seed đi kèm. Khi gặp lỗi, harn
 
 Harness so sánh tính hợp lệ/trạng thái giao dịch, gas, dữ liệu trả về, log, số dư, nonce, runtime code và các storage slot đã khai báo. Các executor của Pluto cũng được so sánh với nhau, bao gồm state root tất định của Pluto. geth tạo state root theo Ethereum Merkle Patricia Trie, còn Pluto hiện dùng application hash riêng; vì vậy hai loại root này không được xem là cùng định dạng. Với geth, harness so sánh trạng thái tài khoản và hợp đồng có thể quan sát được.
 
-`compareAllExecutors` nhận mọi implementation của `evm.Executor`. Hàm này chạy executor song song của Pluto (chế độ tùy chọn) để đối chiếu với geth và executor tuần tự trên các giao dịch chuyển tiền độc lập, giao dịch hợp đồng được chuyển về xử lý tuần tự và block trộn 10.000 giao dịch có thể tái lập. Bộ phân tích P/O/S hiện chỉ chạy song song các giao dịch chuyển EOA tĩnh trong phạm vi đã chứng minh; tạo hợp đồng và gọi hợp đồng vẫn chạy tuần tự theo loại O.
+`compareAllExecutors` nhận mọi implementation của `evm.Executor`, rồi chạy cùng workload trên geth, Pluto tuần tự và Pluto song song. Harness so kết quả giao dịch, trạng thái tài khoản/hợp đồng và state root Pluto. Executor song song chạy giao dịch EVM trên overlay riêng, xác thực rồi chấp nhận theo `TxIndex`; nếu kết quả dựa trên phiên bản cũ, nó hủy lần chạy đó và thực thi lại giao dịch trên state mới nhất. Các block chỉ gồm chuyển EOA tĩnh đủ điều kiện dùng đường xử lý S ít cấp phát hơn. P vẫn tắt cho đến khi có artifact được chứng nhận.
 
 So sánh engine tuần tự với engine song song dùng 1, 2, 4 và 8 worker trên block có 128, 512 và 1.024 giao dịch chuyển tiền không xung đột:
 

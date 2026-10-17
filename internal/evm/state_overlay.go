@@ -10,11 +10,20 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
+// NewOverlay creates a transaction-local StateDB that reads through to an
+// immutable parent snapshot and stores only accounts/slots it touches itself.
+func (s *PebbleStateDB) NewOverlay() *PebbleStateDB {
+	overlay := NewPebbleStateDB(s.db)
+	overlay.overlayBase = s
+	return overlay
+}
+
 // Fork creates an isolated, transaction-boundary snapshot. Uncached reads
 // still use Pebble's immutable committed view, while all maps and journals
 // that can be mutated by the EVM are private to the fork.
 func (s *PebbleStateDB) Fork() *PebbleStateDB {
 	fork := NewPebbleStateDB(s.db)
+	fork.overlayBase = s.overlayBase
 	for addr, account := range s.state {
 		clone := *account
 		if account.Balance != nil {

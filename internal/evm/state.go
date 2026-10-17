@@ -2,6 +2,7 @@ package evm
 
 import (
 	"crypto/sha256"
+	"fmt"
 	"math/big"
 	"sort"
 
@@ -60,6 +61,9 @@ type snapshot struct {
 // PebbleStateDB implements vm.StateDB for geth v1.16
 type PebbleStateDB struct {
 	db *store.PebbleDB
+	// overlayBase is an immutable transaction/block snapshot used by optimistic
+	// TxState instances. It is read without mutating the parent's caches.
+	overlayBase *PebbleStateDB
 
 	// Cache accounts
 	state map[common.Address]*Account
@@ -139,6 +143,11 @@ func (s *PebbleStateDB) getAccount(addr common.Address) *Account {
 	if acc, ok := s.state[addr]; ok {
 		return acc
 	}
+	if s.overlayBase != nil {
+		acc := s.overlayBase.accountSnapshot(addr)
+		s.state[addr] = acc
+		return acc
+	}
 
 	// Key DB: "acc-" + Address
 	key := append([]byte("acc-"), addr.Bytes()...)
@@ -163,6 +172,33 @@ func (s *PebbleStateDB) getAccount(addr common.Address) *Account {
 	}
 	s.state[addr] = &acc
 	return &acc
+}
+
+// accountSnapshot reads an account without populating the source StateDB's
+// mutable caches. It is safe for concurrent optimistic readers while the
+// canonical state is not being resolved.
+func (s *PebbleStateDB) accountSnapshot(addr common.Address) *Account {
+	if acc, ok := s.state[addr]; ok {
+		clone := *acc
+		if acc.Balance != nil {
+			clone.Balance = new(big.Int).Set(acc.Balance)
+		}
+		clone.CodeHash = append([]byte(nil), acc.CodeHash...)
+		return &clone
+	}
+	data, _ := s.db.Get(append([]byte("acc-"), addr.Bytes()...))
+	if len(data) == 0 {
+		return &Account{Balance: new(big.Int)}
+	}
+	var account Account
+	if err := rlp.DecodeBytes(data, &account); err != nil {
+		panic(err)
+	}
+	if account.Balance == nil {
+		account.Balance = new(big.Int)
+	}
+	account.CodeHash = append([]byte(nil), account.CodeHash...)
+	return &account
 }
 
 // storageKey: Key DB storage ("storage-" + addr + key)
@@ -285,14 +321,19 @@ func (s *PebbleStateDB) GetCodeHash(addr common.Address) common.Hash {
 func (s *PebbleStateDB) GetCode(addr common.Address) []byte {
 	// Check cache
 	if code, ok := s.code[addr]; ok {
-		return code
+		return append([]byte(nil), code...)
+	}
+	if s.overlayBase != nil {
+		data := s.overlayBase.codeSnapshot(addr)
+		s.code[addr] = data
+		return append([]byte(nil), data...)
 	}
 
 	// Check DB
 	data, _ := s.db.Get(codeKey(addr))
 	if len(data) > 0 {
 		s.code[addr] = data // Cache lại
-		return data
+		return append([]byte(nil), data...)
 	}
 
 	return nil
@@ -359,6 +400,14 @@ func (s *PebbleStateDB) getStorage(addr common.Address, key common.Hash) common.
 			return val
 		}
 	}
+	if s.overlayBase != nil {
+		value := s.overlayBase.storageSnapshot(addr, key)
+		if s.storage[addr] == nil {
+			s.storage[addr] = make(map[common.Hash]common.Hash)
+		}
+		s.storage[addr][key] = value
+		return value
+	}
 
 	// Đọc DB
 	data, _ := s.db.Get(storageKey(addr, key))
@@ -374,6 +423,27 @@ func (s *PebbleStateDB) getStorage(addr common.Address, key common.Hash) common.
 	}
 	s.storage[addr][key] = val
 	return val
+}
+
+func (s *PebbleStateDB) codeSnapshot(addr common.Address) []byte {
+	if code, ok := s.code[addr]; ok {
+		return append([]byte(nil), code...)
+	}
+	code, _ := s.db.Get(codeKey(addr))
+	return append([]byte(nil), code...)
+}
+
+func (s *PebbleStateDB) storageSnapshot(addr common.Address, key common.Hash) common.Hash {
+	if slots, ok := s.storage[addr]; ok {
+		if value, found := slots[key]; found {
+			return value
+		}
+	}
+	data, _ := s.db.Get(storageKey(addr, key))
+	if len(data) == 0 {
+		return common.Hash{}
+	}
+	return common.BytesToHash(data)
 }
 
 // GetCommittedState: giá trị slot tại thời điểm bắt đầu tx hiện tại (EIP-2200).
@@ -851,4 +921,34 @@ func (s *PebbleStateDB) AddBalanceBig(addr common.Address, amount *big.Int) {
 	acc := s.getAccount(addr)
 	acc.Balance.Add(acc.Balance, amount)
 	s.markDirty(addr)
+}
+
+// ApplyEOATransfer applies the protocol effects of a validated, zero-fee,
+// 21,000-gas EOA transfer without constructing EVM journals. The caller must
+// already have checked nonce, balance, signature, recipient code and gas.
+func (s *PebbleStateDB) ApplyEOATransfer(from, to, coinbase common.Address, nonce uint64, value *uint256.Int) error {
+	if value == nil {
+		return fmt.Errorf("EOA transfer has nil value")
+	}
+	sender := s.getAccount(from)
+	if sender.Nonce != nonce {
+		return fmt.Errorf("EOA transfer nonce changed: state %d, tx %d", sender.Nonce, nonce)
+	}
+	amount := value.ToBig()
+	if sender.Balance.Cmp(amount) < 0 {
+		return fmt.Errorf("EOA transfer balance changed")
+	}
+	if from != to {
+		sender.Balance.Sub(sender.Balance, amount)
+		receiver := s.getAccount(to)
+		receiver.Balance.Add(receiver.Balance, amount)
+		s.markDirty(to)
+	}
+	sender.Nonce++
+	s.markDirty(from)
+	// The zero-fee transition still invokes the balance reward hook for the
+	// coinbase in geth's state transition, which marks that account dirty.
+	_ = s.getAccount(coinbase)
+	s.markDirty(coinbase)
+	return nil
 }
