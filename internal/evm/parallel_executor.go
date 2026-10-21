@@ -422,13 +422,36 @@ type ParallelExecutor struct {
 	ChainConfig *params.ChainConfig
 	ChainID     *big.Int
 	Workers     int
+	Checkpoints CheckpointConfig
 }
 
 func NewParallelExecutor(config *params.ChainConfig, chainID *big.Int, workers int) *ParallelExecutor {
 	if workers < 1 {
 		workers = runtime.GOMAXPROCS(0)
 	}
-	return &ParallelExecutor{ChainConfig: config, ChainID: new(big.Int).Set(chainID), Workers: workers}
+	return &ParallelExecutor{
+		ChainConfig: config, ChainID: new(big.Int).Set(chainID), Workers: workers,
+		Checkpoints: DefaultCheckpointConfig(),
+	}
+}
+
+// ConfigureCheckpoints changes only checkpoint selection. Recovery remains
+// disabled, and the default constructor continues to use P0.
+func (e *ParallelExecutor) ConfigureCheckpoints(config CheckpointConfig) error {
+	if err := config.Validate(); err != nil {
+		return err
+	}
+	e.Checkpoints = config
+	return nil
+}
+
+// NewCheckpointSelector creates deterministic, execution-local policy state.
+// It does not attach recovery or mutate EVM state.
+func (e *ParallelExecutor) NewCheckpointSelector() (*CheckpointSelector, error) {
+	if e == nil {
+		return nil, fmt.Errorf("checkpoint selector requires parallel executor")
+	}
+	return newCheckpointSelector(e.Checkpoints)
 }
 
 func (e *ParallelExecutor) executeStaticBlock(base StateReader, env BlockEnv, txs []*types.Transaction, accesses []staticTransfer) (*BlockResult, error) {
@@ -631,6 +654,11 @@ func (e *ParallelExecutor) executeStaticBlock(base StateReader, env BlockEnv, tx
 	result.Writes = writes
 	result.Metrics["phase_commit_prepare_ns"] = float64(time.Since(prepareStart).Nanoseconds())
 	result.Metrics["phase_total_ns"] = float64(time.Since(started).Nanoseconds())
+	result.CheckpointMetrics = CheckpointMetrics{
+		Aborts:        uint64(abortTotal),
+		Retries:       uint64(abortTotal),
+		FullFallbacks: uint64(abortTotal),
+	}
 	return result, nil
 }
 

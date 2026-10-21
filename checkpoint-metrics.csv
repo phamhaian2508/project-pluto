@@ -1,0 +1,6 @@
+run,policy,interval,replayed_opcodes,replayed_gas,replay_ns,checkpoints_created,checkpoints_reused,checkpoint_memory_bytes,aborts,retries,resumes,full_fallbacks,reused_positions
+P0,P0,0,3038,869848,1016100,0,0,0,31,31,0,31,
+P1,P1,0,3038,869848,999700,0,0,0,31,31,0,31,
+P2-N100,P2,100,3038,869848,1010400,0,0,0,31,31,0,31,
+P2-N1000,P2,1000,3038,869848,0,0,0,0,31,31,0,31,
+P3,P3,0,3038,869848,992000,0,0,0,31,31,0,31,

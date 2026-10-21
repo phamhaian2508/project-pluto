@@ -53,6 +53,43 @@ So sánh engine tuần tự với engine song song dùng 1, 2, 4 và 8 worker tr
 go test ./test/harness -run '^$' -bench '^BenchmarkSequentialVsParallelIndependentTransfers$' -benchtime=30x -benchmem -count=3
 ```
 
+## M5 checkpoint policy matrix
+
+The M5 differential matrix runs each deterministic workload with the sequential
+executor and parallel P0, P1, P2 (`N=100` and `N=1000`), and P3 configurations, then compares
+all results with go-ethereum. It covers transaction status, gas, return data,
+logs, synthesized receipt consensus fields, balances, nonces, code, declared
+storage slots, a shared observed-state root against geth, and Pluto's native
+final block state root across all Pluto executors.
+
+Run the policy matrix and its concurrent seeded workload under the race detector:
+
+```powershell
+$env:CGO_ENABLED='1'
+go test -race -count=1 ./test/harness -run 'TestCheckpointPolicies'
+```
+
 Thời gian tạo Pebble và nạp trạng thái ban đầu không tính vào thời gian benchmark; mỗi lượt vẫn bắt đầu từ trạng thái mới. Đây là benchmark chẩn đoán trên máy cục bộ, không phải bằng chứng rằng toàn bộ EVM đã tăng tốc. Khi chia sẻ kết quả, hãy ghi lại máy, phiên bản Go, số worker, seed và workload.
 
 `mutation_test.go` chứa các executor kiểm thử được cố ý viết sai. Các test xác nhận bộ so sánh phát hiện được giao dịch không hợp lệ bị chấp nhận và giá trị storage bị commit sai. Những executor lỗi này chỉ dùng trong test, không sửa executor production.
+# Checkpoint policy metrics (M5.5)
+
+Run the five policies on the same deterministic high-conflict workload and
+write one stable CSV row per policy from PowerShell:
+
+```powershell
+$env:PLUTO_CHECKPOINT_CSV = Join-Path (Get-Location) "checkpoint-metrics.csv"
+go test ./test/harness -run '^TestCheckpointPolicyCSVExport$' -count=1 -v
+Remove-Item Env:PLUTO_CHECKPOINT_CSV
+```
+
+Run the Go benchmark separately:
+
+```powershell
+go test ./test/harness -run '^$' -bench '^BenchmarkCheckpointPoliciesCSV$' -benchtime=1x -count=1
+```
+
+Replay duration is observational only. Policy selection remains based solely
+on deterministic opcode/read/conflict inputs. With the current upstream-geth
+adapter, unsupported interpreter resume is reported as a safe full fallback;
+therefore checkpoint/resume columns can legitimately be zero.
