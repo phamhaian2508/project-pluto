@@ -41,11 +41,13 @@ type TxResult struct {
 }
 
 type BlockResult struct {
-	Results   []TxResult
-	GasUsed   uint64
-	StateRoot [32]byte
-	Writes    map[string][]byte
-	Metrics   map[string]float64
+	Results           []TxResult
+	GasUsed           uint64
+	StateRoot         [32]byte
+	Writes            map[string][]byte
+	Metrics           map[string]float64
+	CheckpointMetrics CheckpointMetrics
+	CheckpointTrace   []CheckpointTraceEvent
 }
 
 type Executor interface {

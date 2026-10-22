@@ -267,7 +267,13 @@ func (s *TxState) recordRead(key MVKey) {
 
 func (s *TxState) recordWrite(key MVKey) {
 	s.addWriteKey(key)
-	s.addWriteKey(MVKey{Address: key.Address, Kind: MVAccount})
+	// A storage-slot update does not change account existence, nonce, balance,
+	// or code. Versioning MVAccount for every SSTORE creates a false conflict
+	// with the already-validated contract/code prefix and prevents a safe
+	// checkpoint immediately before SLOAD from being reused.
+	if key.Kind != MVStorage && key.Kind != MVStorageRoot {
+		s.addWriteKey(MVKey{Address: key.Address, Kind: MVAccount})
+	}
 }
 
 func (s *TxState) AccessSets() (reads, writes []MVKey) {
@@ -324,12 +330,18 @@ func (s *TxState) CreateContract(addr common.Address) {
 }
 
 func (s *TxState) SubBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) uint256.Int {
+	if amount != nil && amount.IsZero() {
+		return s.PebbleStateDB.SubBalance(addr, amount, reason)
+	}
 	s.recordRead(MVKey{Address: addr, Kind: MVBalance})
 	s.recordWrite(MVKey{Address: addr, Kind: MVBalance})
 	return s.PebbleStateDB.SubBalance(addr, amount, reason)
 }
 
 func (s *TxState) AddBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) uint256.Int {
+	if amount != nil && amount.IsZero() {
+		return s.PebbleStateDB.AddBalance(addr, amount, reason)
+	}
 	s.recordRead(MVKey{Address: addr, Kind: MVBalance})
 	s.recordWrite(MVKey{Address: addr, Kind: MVBalance})
 	return s.PebbleStateDB.AddBalance(addr, amount, reason)
@@ -422,13 +434,36 @@ type ParallelExecutor struct {
 	ChainConfig *params.ChainConfig
 	ChainID     *big.Int
 	Workers     int
+	Checkpoints CheckpointConfig
 }
 
 func NewParallelExecutor(config *params.ChainConfig, chainID *big.Int, workers int) *ParallelExecutor {
 	if workers < 1 {
 		workers = runtime.GOMAXPROCS(0)
 	}
-	return &ParallelExecutor{ChainConfig: config, ChainID: new(big.Int).Set(chainID), Workers: workers}
+	return &ParallelExecutor{
+		ChainConfig: config, ChainID: new(big.Int).Set(chainID), Workers: workers,
+		Checkpoints: DefaultCheckpointConfig(),
+	}
+}
+
+// ConfigureCheckpoints enables deterministic capture/recovery for the selected
+// policy. The default constructor continues to use P0.
+func (e *ParallelExecutor) ConfigureCheckpoints(config CheckpointConfig) error {
+	if err := config.Validate(); err != nil {
+		return err
+	}
+	e.Checkpoints = config
+	return nil
+}
+
+// NewCheckpointSelector creates deterministic, execution-local policy state.
+// It does not attach recovery or mutate EVM state.
+func (e *ParallelExecutor) NewCheckpointSelector() (*CheckpointSelector, error) {
+	if e == nil {
+		return nil, fmt.Errorf("checkpoint selector requires parallel executor")
+	}
+	return newCheckpointSelector(e.Checkpoints)
 }
 
 func (e *ParallelExecutor) executeStaticBlock(base StateReader, env BlockEnv, txs []*types.Transaction, accesses []staticTransfer) (*BlockResult, error) {
@@ -631,6 +666,11 @@ func (e *ParallelExecutor) executeStaticBlock(base StateReader, env BlockEnv, tx
 	result.Writes = writes
 	result.Metrics["phase_commit_prepare_ns"] = float64(time.Since(prepareStart).Nanoseconds())
 	result.Metrics["phase_total_ns"] = float64(time.Since(started).Nanoseconds())
+	result.CheckpointMetrics = CheckpointMetrics{
+		Aborts:        uint64(abortTotal),
+		Retries:       uint64(abortTotal),
+		FullFallbacks: uint64(abortTotal),
+	}
 	return result, nil
 }
 

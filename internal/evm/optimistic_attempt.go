@@ -10,6 +10,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/params"
@@ -23,7 +24,38 @@ type optimisticAttempt struct {
 	state       *TxState
 	readVersion map[MVKey]uint64
 	delta       map[string][]byte
+	checkpoints []attemptCheckpoint
 	status      optimisticAttemptStatus
+}
+
+type gethAttemptRecoveryRunner struct {
+	base     *PebbleStateDB
+	versions *MVMemory
+	config   *params.ChainConfig
+	chainID  *big.Int
+	env      BlockEnv
+	tx       *types.Transaction
+	txIndex  int
+	gasLimit uint64
+}
+
+func (r gethAttemptRecoveryRunner) Resume(checkpoint *attemptCheckpoint, incarnation uint64) (*optimisticAttempt, replayWork, error) {
+	meter := new(attemptReplayMeter)
+	return resumeOptimisticAttempt(r.base, r.versions, r.config, r.chainID, r.env, r.tx, r.txIndex, incarnation, checkpoint, meter)
+}
+
+func (r gethAttemptRecoveryRunner) FullReplay(incarnation uint64) (*optimisticAttempt, replayWork, error) {
+	meter := new(attemptReplayMeter)
+	attempt, err := executeOptimisticAttemptMeasured(r.base, r.versions, r.config, r.chainID, r.env, r.tx, r.txIndex, incarnation, r.gasLimit, meter)
+	work := replayWork{opcodes: meter.opcodes}
+	if attempt != nil {
+		work.gas = attempt.result.GasUsed
+	}
+	return attempt, work, err
+}
+
+type attemptReplayMeter struct {
+	opcodes uint64
 }
 
 type optimisticAttemptStatus uint8
@@ -83,7 +115,9 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 		workers = 1
 	}
 	result := &BlockResult{Results: make([]TxResult, len(txs)), Writes: make(map[string][]byte), Metrics: make(map[string]float64)}
+	var checkpointMetrics CheckpointMetrics
 	versions := NewMVMemory()
+	hotKeys := make(map[MVKey]struct{})
 	remainingGas := env.GasLimit
 	analyzeNS, executeNS, validateNS, resolveNS := preAnalyzeNS, int64(0), int64(0), int64(0)
 	var aborts, retries, parallelTxs, staticTxs, opaqueTxs float64
@@ -101,6 +135,7 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 		}
 		wave := txs[start:end]
 		attempts := make([]*optimisticAttempt, len(wave))
+		waveHotKeys := cloneMVKeySet(hotKeys)
 		for _, tx := range wave {
 			analyzeStart = time.Now()
 			if _, isStatic := e.staticTransferAccess(stateDB, tx, env.BaseFee); isStatic {
@@ -123,7 +158,7 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 			go func() {
 				defer wg.Done()
 				for item := range jobs {
-					attempt, err := executeOptimisticAttempt(stateDB, versions, e.ChainConfig, e.ChainID, env, wave[item.index], start+item.index, 1, env.GasLimit)
+					attempt, err := executeOptimisticAttemptConfigured(stateDB, versions, e.ChainConfig, e.ChainID, env, wave[item.index], start+item.index, 1, env.GasLimit, e.Checkpoints, waveHotKeys, nil)
 					if err != nil {
 						// Store the error as an invalid result; the resolver reports it
 						// deterministically in transaction order.
@@ -151,6 +186,7 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 			if speculative == nil {
 				return nil, fmt.Errorf("transaction %d produced no speculative result", start+i)
 			}
+			recordAttemptCheckpoints(&checkpointMetrics, speculative)
 			mustRetry := false
 			if tx != nil && tx.Gas() > remainingGas {
 				mustRetry = true
@@ -164,14 +200,46 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 			if mustRetry {
 				speculative.status = attemptAborted
 				aborts++
-				retries++
 				retryStart := time.Now()
-				var retryErr error
-				accepted, retryErr = executeOptimisticAttempt(stateDB, versions, e.ChainConfig, e.ChainID, env, tx, start+i, 2, remainingGas)
+				failedRead := firstInvalidRead(speculative, versions)
+				if failedRead >= 0 && speculative.state != nil && failedRead < len(speculative.state.ReadSet) {
+					hotKeys[speculative.state.ReadSet[failedRead]] = struct{}{}
+				}
+				runner := gethAttemptRecoveryRunner{
+					base: stateDB, versions: versions, config: e.ChainConfig, chainID: e.ChainID,
+					env: env, tx: tx, txIndex: start + i, gasLimit: remainingGas,
+				}
+				recovery, retryErr := recoverOptimisticAttempt(versions, speculative, failedRead, 2, runner)
 				executeNS += time.Since(retryStart).Nanoseconds()
 				if retryErr != nil {
 					return nil, fmt.Errorf("retry transaction %d: %w", start+i, retryErr)
 				}
+				accepted = recovery.attempt
+				recordAttemptCheckpoints(&checkpointMetrics, accepted)
+				retries += float64(recovery.retries)
+				checkpointMetrics.ReplayedOpcodes += recovery.replayedOpcodes
+				checkpointMetrics.ReplayedGas += recovery.replayedGas
+				checkpointMetrics.ReplayNanoseconds += recovery.replayNanoseconds
+				checkpointMetrics.Retries += uint64(recovery.retries)
+				checkpointMetrics.Resumes += recovery.resumes
+				checkpointMetrics.FullFallbacks += recovery.fullFallbacks
+				checkpointMetrics.CheckpointsReused += uint64(len(recovery.reusedPositions))
+				checkpointMetrics.ReusedPositions = append(checkpointMetrics.ReusedPositions, recovery.reusedPositions...)
+				traceAction := "full-replay"
+				if len(recovery.reusedPositions) > 0 {
+					traceAction = "resume"
+				}
+				checkpointPositions := make([]uint64, len(speculative.checkpoints))
+				for checkpointIndex := range speculative.checkpoints {
+					checkpointPositions[checkpointIndex] = speculative.checkpoints[checkpointIndex].opcodePosition
+				}
+				result.CheckpointTrace = append(result.CheckpointTrace, CheckpointTraceEvent{
+					TxIndex: start + i, FailedRead: failedRead,
+					CheckpointsCreated:  uint64(len(speculative.checkpoints)),
+					CheckpointPositions: checkpointPositions,
+					Action:              traceAction, ReusedPositions: append([]uint64(nil), recovery.reusedPositions...),
+					ReplayedOpcodes: recovery.replayedOpcodes, FullFallbacks: recovery.fullFallbacks,
+				})
 			}
 			accepted.status = attemptValidated
 			accepted.result.Index = start + i
@@ -215,10 +283,38 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 	result.Metrics["phase_validate_ns"] = float64(validateNS)
 	result.Metrics["phase_resolve_ns"] = float64(resolveNS)
 	result.Metrics["phase_total_ns"] = float64(time.Since(totalStarted).Nanoseconds())
+	checkpointMetrics.Aborts = uint64(aborts)
+	result.Metrics["checkpoint_replayed_opcodes"] = float64(checkpointMetrics.ReplayedOpcodes)
+	result.Metrics["checkpoint_replayed_gas"] = float64(checkpointMetrics.ReplayedGas)
+	result.Metrics["checkpoint_replay_ns"] = float64(checkpointMetrics.ReplayNanoseconds)
+	result.Metrics["checkpoint_created"] = float64(checkpointMetrics.CheckpointsCreated)
+	result.Metrics["checkpoint_reused"] = float64(checkpointMetrics.CheckpointsReused)
+	result.Metrics["checkpoint_memory_bytes"] = float64(checkpointMetrics.CheckpointMemoryBytes)
+	result.Metrics["checkpoint_resume_total"] = float64(checkpointMetrics.Resumes)
+	result.Metrics["checkpoint_full_fallback_total"] = float64(checkpointMetrics.FullFallbacks)
+	result.CheckpointMetrics = checkpointMetrics
 	return result, nil
 }
 
+func recordAttemptCheckpoints(metrics *CheckpointMetrics, attempt *optimisticAttempt) {
+	if metrics == nil || attempt == nil {
+		return
+	}
+	metrics.CheckpointsCreated += uint64(len(attempt.checkpoints))
+	for i := range attempt.checkpoints {
+		metrics.CheckpointMemoryBytes += attempt.checkpoints[i].execution.EstimatedMemoryBytes()
+	}
+}
+
 func executeOptimisticAttempt(base *PebbleStateDB, versions *MVMemory, config *params.ChainConfig, chainID *big.Int, env BlockEnv, tx *types.Transaction, txIndex int, incarnation uint64, gasLimit uint64) (*optimisticAttempt, error) {
+	return executeOptimisticAttemptMeasured(base, versions, config, chainID, env, tx, txIndex, incarnation, gasLimit, nil)
+}
+
+func executeOptimisticAttemptMeasured(base *PebbleStateDB, versions *MVMemory, config *params.ChainConfig, chainID *big.Int, env BlockEnv, tx *types.Transaction, txIndex int, incarnation uint64, gasLimit uint64, meter *attemptReplayMeter) (*optimisticAttempt, error) {
+	return executeOptimisticAttemptConfigured(base, versions, config, chainID, env, tx, txIndex, incarnation, gasLimit, DefaultCheckpointConfig(), nil, meter)
+}
+
+func executeOptimisticAttemptConfigured(base *PebbleStateDB, versions *MVMemory, config *params.ChainConfig, chainID *big.Int, env BlockEnv, tx *types.Transaction, txIndex int, incarnation uint64, gasLimit uint64, checkpointConfig CheckpointConfig, hotKeys map[MVKey]struct{}, meter *attemptReplayMeter) (*optimisticAttempt, error) {
 	attempt := &optimisticAttempt{result: TxResult{Index: txIndex}, status: attemptEstimate}
 	if tx == nil {
 		attempt.result.Invalid = true
@@ -258,12 +354,40 @@ func executeOptimisticAttempt(base *PebbleStateDB, versions *MVMemory, config *p
 		BlobBaseFee: new(big.Int),
 		GasLimit:    env.GasLimit,
 	}
-	evmEnv := vm.NewEVM(blockContext, state, config, vm.Config{})
+	if err := checkpointConfig.Validate(); err != nil {
+		return nil, err
+	}
+	vmConfig := vm.Config{}
+	var capture *checkpointCapture
+	if checkpointConfig.Policy != CheckpointPolicyP0 {
+		capture = &checkpointCapture{
+			config: checkpointConfig, hotKeys: hotKeys, state: state, versions: versions, attempt: attempt,
+		}
+	}
+	if meter != nil || capture != nil {
+		vmConfig.Tracer = &tracing.Hooks{
+			OnOpcode: func(pc uint64, op byte, gas, cost uint64, context tracing.OpContext, returnData []byte, depth int, opErr error) {
+				if meter != nil {
+					meter.opcodes++
+				}
+				if capture != nil {
+					capture.onOpcode(pc, op, gas, cost, context, returnData, depth, opErr)
+				}
+			},
+		}
+	}
+	evmEnv := vm.NewEVM(blockContext, state, config, vmConfig)
+	if capture != nil {
+		capture.evm = evmEnv
+	}
 	evmEnv.SetTxContext(core.NewEVMTxContext(msg))
 	logStart := len(state.GetLogs())
 	snapshot := state.Snapshot()
 	gasPool := new(core.GasPool).AddGas(gasLimit)
 	execution, applyErr := core.ApplyMessage(evmEnv, msg, gasPool)
+	if capture != nil && capture.err != nil {
+		return nil, capture.err
+	}
 	if applyErr != nil {
 		state.RevertToSnapshot(snapshot)
 		state.Finalise(true)

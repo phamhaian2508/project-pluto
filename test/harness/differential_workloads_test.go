@@ -437,6 +437,43 @@ func TestDifferentialHarnessFailureModesMatchGeth(t *testing.T) {
 	}
 }
 
+func TestCheckpointPoliciesMatchSequentialAndGethAcrossWorkloads(t *testing.T) {
+	const seed = uint64(20261020)
+	workloads := []differentialWorkload{
+		newCounterDifferentialWorkload(t),
+		newCounterContentionWorkload(t, 32),
+		newERC20DifferentialWorkload(t),
+		newAMMDifferentialWorkload(t, 8),
+		newNestedCallDifferentialWorkload(t),
+		newFailureModesDifferentialWorkload(t),
+		newMixedWorkload(t, seed, 64, 8, 0.9),
+		newCheckpointResumeBenchmarkWorkload(t, 64),
+	}
+	for _, workload := range workloads {
+		workload := workload
+		t.Run(workload.name, func(t *testing.T) {
+			compareAllExecutors(t, workload, checkpointPolicyExecutors(t, 4)...)
+		})
+	}
+}
+
+func TestCheckpointPoliciesConcurrentSeededWorkload(t *testing.T) {
+	const seed = uint64(0x5a17cafe)
+	workload := newMixedWorkload(t, seed, 48, 8, 0.85)
+	sequential := runPlutoDifferentialWorkload(t, evm.NewSequentialExecutor(newChainConfig(), chainID), workload)
+	geth := runGethDifferentialWorkload(t, workload)
+	assertDifferentialObservationsEqual(t, workload, "Pluto sequential", sequential, "geth reference", geth)
+
+	for _, named := range checkpointPolicyExecutors(t, 4)[1:] {
+		named := named
+		t.Run(named.name, func(t *testing.T) {
+			t.Parallel()
+			got := runPlutoDifferentialWorkload(t, named.ev, workload)
+			assertDifferentialObservationsEqual(t, workload, named.name, got, "Pluto sequential", sequential)
+		})
+	}
+}
+
 func TestDeterministicAccountPoolAndWorkload(t *testing.T) {
 	first := newAccountPool(t, 99, 4)
 	second := newAccountPool(t, 99, 4)
@@ -460,12 +497,7 @@ func FuzzDifferentialHarnessSeededMixedBlocks(f *testing.F) {
 	f.Add(uint64(0xdeadbeef))
 	f.Fuzz(func(t *testing.T, seed uint64) {
 		workload := newMixedWorkload(t, seed, 32, 8, 0.7)
-		pluto := runPlutoDifferentialWorkload(t, evm.NewParallelExecutor(newChainConfig(), chainID, 4), workload)
-		geth := runGethDifferentialWorkload(t, workload)
-		mismatches := differentialMismatches(workload, "Pluto parallel", pluto, "geth reference", geth)
-		if len(mismatches) > 0 {
-			t.Fatalf("seed=%d first mismatch: %s", seed, mismatches[0])
-		}
+		compareAllExecutors(t, workload, checkpointPolicyExecutors(t, 4)...)
 	})
 }
 

@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -17,6 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/holiman/uint256"
 	plutoconfig "github.com/phamhaian2508/project-pluto/internal/config"
 	"github.com/phamhaian2508/project-pluto/internal/evm"
@@ -78,6 +80,7 @@ type differentialWorkload struct {
 	contract        common.Address
 	accounts        []common.Address
 	initialBalances map[common.Address]*big.Int
+	initialCode     map[common.Address][]byte
 	storageSlots    map[common.Address][]common.Hash
 	initialBalance  *big.Int
 	env             evm.BlockEnv
@@ -91,12 +94,15 @@ type differentialAccount struct {
 }
 
 type differentialObservation struct {
-	results      []evm.TxResult
-	gasUsed      uint64
-	accounts     map[common.Address]differentialAccount
-	stateRoot    common.Hash
-	hasStateRoot bool
-	metrics      map[string]float64
+	results        []evm.TxResult
+	receipts       []*types.Receipt
+	gasUsed        uint64
+	accounts       map[common.Address]differentialAccount
+	stateRoot      common.Hash
+	hasStateRoot   bool
+	comparisonRoot common.Hash
+	metrics        map[string]float64
+	checkpoint     evm.CheckpointMetrics
 }
 
 func newCounterDifferentialWorkload(t testing.TB) differentialWorkload {
@@ -177,6 +183,9 @@ func runPlutoDifferentialWorkload(t testing.TB, executor evm.Executor, workload 
 	for addr, balance := range workloadBalances(workload) {
 		seed.AddBalanceBig(addr, balance)
 	}
+	for addr, code := range workload.initialCode {
+		seed.SetCode(addr, code, tracing.CodeChangeUnspecified)
+	}
 	if err := seed.Commit(); err != nil {
 		t.Fatalf("seed Pluto harness state: %v", err)
 	}
@@ -189,6 +198,7 @@ func runPlutoDifferentialWorkload(t testing.TB, executor evm.Executor, workload 
 	observation.stateRoot = common.BytesToHash(result.StateRoot[:])
 	observation.hasStateRoot = true
 	observation.metrics = result.Metrics
+	observation.checkpoint = result.CheckpointMetrics
 	if err := db.Close(); err != nil {
 		t.Fatalf("close Pluto harness state: %v", err)
 	}
@@ -221,6 +231,9 @@ func workloadAddresses(workload differentialWorkload) []common.Address {
 	for addr := range workload.storageSlots {
 		add(addr)
 	}
+	for addr := range workload.initialCode {
+		add(addr)
+	}
 	return addresses
 }
 
@@ -239,7 +252,39 @@ func capturePlutoObservation(stateDB *evm.PebbleStateDB, result *evm.BlockResult
 		}
 		accounts[addr] = account
 	}
-	return differentialObservation{results: result.Results, gasUsed: result.GasUsed, accounts: accounts}
+	return differentialObservation{
+		results: result.Results, receipts: buildReceipts(workload, result.Results),
+		gasUsed: result.GasUsed, accounts: accounts, comparisonRoot: observedStateRoot(accounts),
+	}
+}
+
+func buildReceipts(workload differentialWorkload, results []evm.TxResult) []*types.Receipt {
+	receipts := make([]*types.Receipt, len(results))
+	var cumulativeGas uint64
+	for i, result := range results {
+		if result.Invalid {
+			continue
+		}
+		cumulativeGas += result.GasUsed
+		status := types.ReceiptStatusSuccessful
+		if result.Failed {
+			status = types.ReceiptStatusFailed
+		}
+		tx := workload.transactions[i]
+		receipt := &types.Receipt{
+			Type: tx.Type(), Status: status, CumulativeGasUsed: cumulativeGas,
+			Logs: result.Logs, TxHash: tx.Hash(), GasUsed: result.GasUsed,
+			EffectiveGasPrice: new(big.Int), BlockNumber: big.NewInt(workload.env.Height), TransactionIndex: uint(i),
+		}
+		if tx.To() == nil {
+			if sender, err := types.Sender(types.LatestSignerForChainID(chainID), tx); err == nil {
+				receipt.ContractAddress = crypto.CreateAddress(sender, tx.Nonce())
+			}
+		}
+		receipt.Bloom = types.CreateBloom(receipt)
+		receipts[i] = receipt
+	}
+	return receipts
 }
 
 func runGethDifferentialWorkload(t testing.TB, workload differentialWorkload) differentialObservation {
@@ -255,6 +300,9 @@ func runGethDifferentialWorkload(t testing.TB, workload differentialWorkload) di
 			t.Fatalf("initial balance for %s does not fit uint256", addr)
 		}
 		stateDB.SetBalance(addr, initialBalance, tracing.BalanceChangeUnspecified)
+	}
+	for addr, code := range workload.initialCode {
+		stateDB.SetCode(addr, code, tracing.CodeChangeUnspecified)
 	}
 
 	blockContext := vm.BlockContext{
@@ -326,7 +374,56 @@ func runGethDifferentialWorkload(t testing.TB, workload differentialWorkload) di
 		}
 		accounts[addr] = account
 	}
-	return differentialObservation{results: results, gasUsed: blockGasUsed, accounts: accounts}
+	return differentialObservation{
+		results: results, receipts: buildReceipts(workload, results),
+		gasUsed: blockGasUsed, accounts: accounts, comparisonRoot: observedStateRoot(accounts),
+	}
+}
+
+type observedRootSlot struct {
+	Key   common.Hash
+	Value common.Hash
+}
+
+type observedRootAccount struct {
+	Address common.Address
+	Balance *big.Int
+	Nonce   uint64
+	Code    []byte
+	Storage []observedRootSlot
+}
+
+// observedStateRoot gives Pluto and geth a shared root domain over every
+// account and storage slot declared by the workload. Pluto's native app root is
+// still compared separately among Pluto executors because it is not an MPT.
+func observedStateRoot(accounts map[common.Address]differentialAccount) common.Hash {
+	addresses := make([]common.Address, 0, len(accounts))
+	for address := range accounts {
+		addresses = append(addresses, address)
+	}
+	sort.Slice(addresses, func(i, j int) bool { return bytes.Compare(addresses[i][:], addresses[j][:]) < 0 })
+	canonical := make([]observedRootAccount, 0, len(addresses))
+	for _, address := range addresses {
+		account := accounts[address]
+		slots := make([]common.Hash, 0, len(account.storage))
+		for slot := range account.storage {
+			slots = append(slots, slot)
+		}
+		sort.Slice(slots, func(i, j int) bool { return bytes.Compare(slots[i][:], slots[j][:]) < 0 })
+		entry := observedRootAccount{
+			Address: address, Balance: new(big.Int).Set(account.balance), Nonce: account.nonce,
+			Code: append([]byte(nil), account.code...), Storage: make([]observedRootSlot, 0, len(slots)),
+		}
+		for _, slot := range slots {
+			entry.Storage = append(entry.Storage, observedRootSlot{Key: slot, Value: account.storage[slot]})
+		}
+		canonical = append(canonical, entry)
+	}
+	encoded, err := rlp.EncodeToBytes(canonical)
+	if err != nil {
+		panic(err)
+	}
+	return crypto.Keccak256Hash(encoded)
 }
 
 func differentialMismatches(workload differentialWorkload, leftName string, left differentialObservation, rightName string, right differentialObservation) []string {
@@ -341,6 +438,9 @@ func differentialMismatches(workload differentialWorkload, leftName string, left
 	if left.hasStateRoot && right.hasStateRoot && left.stateRoot != right.stateRoot {
 		mismatches = append(mismatches, fmt.Sprintf("%s: Pluto state root: %s=%s %s=%s", blockName, leftName, left.stateRoot, rightName, right.stateRoot))
 	}
+	if left.comparisonRoot != right.comparisonRoot {
+		mismatches = append(mismatches, fmt.Sprintf("%s: observed final-state root: %s=%s %s=%s", blockName, leftName, left.comparisonRoot, rightName, right.comparisonRoot))
+	}
 	for i := range left.results {
 		got, want := left.results[i], right.results[i]
 		if got.Index != want.Index || got.Invalid != want.Invalid || got.Failed != want.Failed || got.GasUsed != want.GasUsed || !bytes.Equal(got.ReturnData, want.ReturnData) {
@@ -353,6 +453,15 @@ func differentialMismatches(workload differentialWorkload, leftName string, left
 		for j := range got.Logs {
 			if !sameLog(got.Logs[j], want.Logs[j]) {
 				mismatches = append(mismatches, fmt.Sprintf("%s tx[%d] log[%d] differs: %s=%+v %s=%+v", blockName, i, j, leftName, got.Logs[j], rightName, want.Logs[j]))
+			}
+		}
+	}
+	if len(left.receipts) != len(right.receipts) {
+		mismatches = append(mismatches, fmt.Sprintf("%s: receipt count: %s=%d %s=%d", blockName, leftName, len(left.receipts), rightName, len(right.receipts)))
+	} else {
+		for i := range left.receipts {
+			if !sameReceipt(left.receipts[i], right.receipts[i]) {
+				mismatches = append(mismatches, fmt.Sprintf("%s receipt[%d] differs: %s=%+v %s=%+v", blockName, i, leftName, left.receipts[i], rightName, right.receipts[i]))
 			}
 		}
 	}
@@ -438,6 +547,48 @@ func sameLog(a, b *types.Log) bool {
 	return true
 }
 
+func sameReceipt(a, b *types.Receipt) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if a.Type != b.Type || a.Status != b.Status || a.CumulativeGasUsed != b.CumulativeGasUsed ||
+		a.Bloom != b.Bloom || a.TxHash != b.TxHash || a.ContractAddress != b.ContractAddress ||
+		a.GasUsed != b.GasUsed || a.TransactionIndex != b.TransactionIndex || len(a.Logs) != len(b.Logs) {
+		return false
+	}
+	for i := range a.Logs {
+		if !sameLog(a.Logs[i], b.Logs[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func checkpointPolicyExecutors(t testing.TB, workers int) []namedExecutor {
+	t.Helper()
+	executors := []namedExecutor{
+		{name: "Pluto sequential", ev: evm.NewSequentialExecutor(newChainConfig(), chainID)},
+	}
+	configs := []struct {
+		name   string
+		config evm.CheckpointConfig
+	}{
+		{name: "Pluto parallel P0", config: evm.CheckpointConfig{Policy: evm.CheckpointPolicyP0}},
+		{name: "Pluto parallel P1", config: evm.CheckpointConfig{Policy: evm.CheckpointPolicyP1}},
+		{name: "Pluto parallel P2-N100", config: evm.CheckpointConfig{Policy: evm.CheckpointPolicyP2, Interval: 100}},
+		{name: "Pluto parallel P2-N1000", config: evm.CheckpointConfig{Policy: evm.CheckpointPolicyP2, Interval: 1000}},
+		{name: "Pluto parallel P3", config: evm.CheckpointConfig{Policy: evm.CheckpointPolicyP3}},
+	}
+	for _, item := range configs {
+		executor := evm.NewParallelExecutor(newChainConfig(), chainID, workers)
+		if err := executor.ConfigureCheckpoints(item.config); err != nil {
+			t.Fatalf("configure %s: %v", item.name, err)
+		}
+		executors = append(executors, namedExecutor{name: item.name, ev: executor})
+	}
+	return executors
+}
+
 func TestDifferentialHarnessCounterWorkloadMatchesGeth(t *testing.T) {
 	workload := newCounterDifferentialWorkload(t)
 	observations := compareAllExecutors(t, workload,
@@ -507,7 +658,7 @@ func TestDifferentialHarnessParallelStaticTransfersMatchSequentialAndGeth(t *tes
 	}
 }
 
-func TestDifferentialHarnessParallelRetriesDependentContractTransactions(t *testing.T) {
+func TestDifferentialHarnessParallelFullyReplaysAfterValidationFailure(t *testing.T) {
 	workload := newCounterDifferentialWorkload(t)
 	observations := compareAllExecutors(t, workload,
 		namedExecutor{name: "Pluto sequential", ev: evm.NewSequentialExecutor(newChainConfig(), chainID)},
@@ -520,8 +671,21 @@ func TestDifferentialHarnessParallelRetriesDependentContractTransactions(t *test
 	if parallel.metrics["tx_class_s"] != 1 {
 		t.Fatalf("transfer in contract workload classified as S count = %v, want 1", parallel.metrics["tx_class_s"])
 	}
-	if parallel.metrics["retry_total"] == 0 {
-		t.Fatal("dependent contract workload did not exercise optimistic retry")
+
+	// Every transaction after the first speculatively reads the sender nonce
+	// before its predecessor is accepted. Ordered validation therefore aborts
+	// those stale incarnation-1 attempts and the current implementation starts
+	// each transaction again from its entry point as incarnation 2.
+	wantRetries := float64(len(workload.transactions) - 1)
+	if got := parallel.metrics["retry_total"]; got != wantRetries {
+		t.Fatalf("parallel retry_total = %v, want %v full transaction replays", got, wantRetries)
+	}
+	if got := parallel.metrics["abort_total"]; got != wantRetries {
+		t.Fatalf("parallel abort_total = %v, want %v stale attempts", got, wantRetries)
+	}
+	wantIncarnations := float64(len(workload.transactions)) + wantRetries
+	if got := parallel.metrics["incarnation_total"]; got != wantIncarnations {
+		t.Fatalf("parallel incarnation_total = %v, want %v initial attempts plus full replays", got, wantIncarnations)
 	}
 }
 
