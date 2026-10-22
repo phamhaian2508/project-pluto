@@ -90,6 +90,7 @@ go test ./test/harness -run '^$' -bench '^BenchmarkCheckpointPoliciesCSV$' -benc
 ```
 
 Replay duration is observational only. Policy selection remains based solely
-on deterministic opcode/read/conflict inputs. With the current upstream-geth
-adapter, unsupported interpreter resume is reported as a safe full fallback;
-therefore checkpoint/resume columns can legitimately be zero.
+on deterministic opcode/read/conflict inputs. The production adapter resumes
+top-level geth frames from captured PC/stack/memory/gas state. Unsupported
+boundaries, such as contract creation and Verkle/EIP-4762 execution, are
+reported as safe P0 full fallbacks.

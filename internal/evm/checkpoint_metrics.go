@@ -24,6 +24,20 @@ type CheckpointMetrics struct {
 	ReusedPositions       []uint64
 }
 
+// CheckpointTraceEvent is a deterministic, read-only explanation of one
+// optimistic conflict. It is populated by the production resolver after the
+// recovery decision and is never consulted by execution or consensus.
+type CheckpointTraceEvent struct {
+	TxIndex             int
+	FailedRead          int
+	CheckpointsCreated  uint64
+	CheckpointPositions []uint64
+	Action              string
+	ReusedPositions     []uint64
+	ReplayedOpcodes     uint64
+	FullFallbacks       uint64
+}
+
 type CheckpointCSVRow struct {
 	Run      string
 	Policy   CheckpointPolicy

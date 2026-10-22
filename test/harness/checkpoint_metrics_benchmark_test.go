@@ -3,10 +3,13 @@ package harness_test
 import (
 	"bytes"
 	"encoding/csv"
+	"math/big"
 	"os"
 	"strconv"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/phamhaian2508/project-pluto/internal/evm"
 )
 
@@ -36,7 +39,7 @@ func runCheckpointMetricPolicy(t testing.TB, item checkpointMetricPolicyCase, wo
 
 func checkpointMetricRows(t testing.TB) []evm.CheckpointCSVRow {
 	t.Helper()
-	workload := newCounterContentionWorkload(t, 32)
+	workload := newCheckpointResumeBenchmarkWorkload(t, 64)
 	cases := checkpointMetricPolicyCases()
 	rows := make([]evm.CheckpointCSVRow, 0, len(cases))
 	for _, item := range cases {
@@ -46,6 +49,35 @@ func checkpointMetricRows(t testing.TB) []evm.CheckpointCSVRow {
 		})
 	}
 	return rows
+}
+
+func checkpointBenchmarkCode() []byte {
+	code := make([]byte, 0, 1120)
+	for i := 0; i < 550; i++ {
+		code = append(code, 0x5f, 0x50)
+	}
+	return append(code, 0x5f, 0x54, 0x60, 0x01, 0x01, 0x5f, 0x55, 0x00)
+}
+
+func newCheckpointResumeBenchmarkWorkload(t testing.TB, txCount int) differentialWorkload {
+	t.Helper()
+	pool := newAccountPool(t, 0x5_500_005, txCount)
+	contract := common.HexToAddress("0x0000000000000000000000000000000000c0ffee")
+	workload := differentialWorkload{
+		name:         "checkpoint-resume-independent-senders-hot-storage",
+		transactions: make([]*types.Transaction, txCount), contract: contract,
+		accounts:        []common.Address{contract},
+		initialBalances: make(map[common.Address]*big.Int, txCount),
+		initialCode:     map[common.Address][]byte{contract: checkpointBenchmarkCode()},
+		storageSlots:    map[common.Address][]common.Hash{contract: {common.Hash{}}},
+		env:             evm.BlockEnv{Height: 15, Time: 15, GasLimit: blockGasLimit, BaseFee: new(big.Int)},
+	}
+	for i, account := range pool {
+		workload.accounts = append(workload.accounts, account.address)
+		workload.initialBalances[account.address] = big.NewInt(1_000_000_000)
+		workload.transactions[i] = signedTx(t, account.keyHex, 0, 200_000, &contract, new(big.Int), nil)
+	}
+	return workload
 }
 
 // TestCheckpointPolicyCSVExport runs every policy against the same deterministic
@@ -67,11 +99,23 @@ func TestCheckpointPolicyCSVExport(t *testing.T) {
 		if record[0] != wantRuns[index] {
 			t.Fatalf("CSV run %d = %q, want %q", index, record[0], wantRuns[index])
 		}
-		for _, column := range []int{3, 4, 9, 10, 12} {
+		values := make(map[int]uint64)
+		for _, column := range []int{3, 4, 6, 7, 9, 10, 11, 12} {
 			value, parseErr := strconv.ParseUint(record[column], 10, 64)
-			if parseErr != nil || value == 0 {
-				t.Fatalf("run %s column %s = %q, want positive integer", record[0], records[0][column], record[column])
+			if parseErr != nil {
+				t.Fatalf("run %s column %s = %q, want integer", record[0], records[0][column], record[column])
 			}
+			values[column] = value
+		}
+		if values[3] == 0 || values[4] == 0 || values[9] == 0 || values[10] == 0 {
+			t.Fatalf("run %s did not exercise replay: %v", record[0], record)
+		}
+		if record[0] == "P0" {
+			if values[6] != 0 || values[7] != 0 || values[11] != 0 || values[12] == 0 {
+				t.Fatalf("unexpected P0 checkpoint metrics: %v", record)
+			}
+		} else if values[6] == 0 || values[7] == 0 || values[11] == 0 {
+			t.Fatalf("run %s did not create/reuse/resume checkpoints: %v", record[0], record)
 		}
 	}
 	if path := os.Getenv("PLUTO_CHECKPOINT_CSV"); path != "" {
@@ -83,7 +127,7 @@ func TestCheckpointPolicyCSVExport(t *testing.T) {
 }
 
 func BenchmarkCheckpointPoliciesCSV(b *testing.B) {
-	workload := newCounterContentionWorkload(b, 32)
+	workload := newCheckpointResumeBenchmarkWorkload(b, 64)
 	for _, item := range checkpointMetricPolicyCases() {
 		b.Run(item.name, func(b *testing.B) {
 			b.ReportAllocs()

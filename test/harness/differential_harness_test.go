@@ -80,6 +80,7 @@ type differentialWorkload struct {
 	contract        common.Address
 	accounts        []common.Address
 	initialBalances map[common.Address]*big.Int
+	initialCode     map[common.Address][]byte
 	storageSlots    map[common.Address][]common.Hash
 	initialBalance  *big.Int
 	env             evm.BlockEnv
@@ -182,6 +183,9 @@ func runPlutoDifferentialWorkload(t testing.TB, executor evm.Executor, workload 
 	for addr, balance := range workloadBalances(workload) {
 		seed.AddBalanceBig(addr, balance)
 	}
+	for addr, code := range workload.initialCode {
+		seed.SetCode(addr, code, tracing.CodeChangeUnspecified)
+	}
 	if err := seed.Commit(); err != nil {
 		t.Fatalf("seed Pluto harness state: %v", err)
 	}
@@ -225,6 +229,9 @@ func workloadAddresses(workload differentialWorkload) []common.Address {
 	add(workload.recipient)
 	add(workload.contract)
 	for addr := range workload.storageSlots {
+		add(addr)
+	}
+	for addr := range workload.initialCode {
 		add(addr)
 	}
 	return addresses
@@ -293,6 +300,9 @@ func runGethDifferentialWorkload(t testing.TB, workload differentialWorkload) di
 			t.Fatalf("initial balance for %s does not fit uint256", addr)
 		}
 		stateDB.SetBalance(addr, initialBalance, tracing.BalanceChangeUnspecified)
+	}
+	for addr, code := range workload.initialCode {
+		stateDB.SetCode(addr, code, tracing.CodeChangeUnspecified)
 	}
 
 	blockContext := vm.BlockContext{

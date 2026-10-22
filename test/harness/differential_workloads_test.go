@@ -447,6 +447,7 @@ func TestCheckpointPoliciesMatchSequentialAndGethAcrossWorkloads(t *testing.T) {
 		newNestedCallDifferentialWorkload(t),
 		newFailureModesDifferentialWorkload(t),
 		newMixedWorkload(t, seed, 64, 8, 0.9),
+		newCheckpointResumeBenchmarkWorkload(t, 64),
 	}
 	for _, workload := range workloads {
 		workload := workload

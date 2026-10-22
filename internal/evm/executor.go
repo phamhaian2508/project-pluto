@@ -47,6 +47,7 @@ type BlockResult struct {
 	Writes            map[string][]byte
 	Metrics           map[string]float64
 	CheckpointMetrics CheckpointMetrics
+	CheckpointTrace   []CheckpointTraceEvent
 }
 
 type Executor interface {

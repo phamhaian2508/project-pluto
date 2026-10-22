@@ -110,12 +110,14 @@ func (s *CheckpointSelector) MarkReadConflict(key MVKey) {
 // InterpreterState is the geth-fork-neutral state needed to continue between
 // opcodes. The production geth adapter will populate it in a later task.
 type InterpreterState struct {
-	PC         uint64
-	Stack      []uint256.Int
-	Memory     []byte
-	ReturnData []byte
-	Gas        uint64
-	CallFrames []CallFrameState
+	PC                uint64
+	Stack             []uint256.Int
+	Memory            []byte
+	MemoryLastGasCost uint64
+	ReturnData        []byte
+	Gas               uint64
+	CallGasTemp       uint64
+	CallFrames        []CallFrameState
 }
 
 // CallFrameState owns the execution context and mutable machine state of one
@@ -131,10 +133,13 @@ type CallFrameState struct {
 	Caller      common.Address
 	Address     common.Address
 	CodeAddress common.Address
+	CodeHash    common.Hash
 	Code        []byte
 	Input       []byte
 	Value       uint256.Int
 	ReadOnly    bool
+	Deployment  bool
+	SystemCall  bool
 }
 
 // ExecutionCheckpoint is an immutable, RAM-only snapshot. It deliberately has
@@ -254,7 +259,8 @@ func storagePayloadBytes(storage map[common.Address]map[common.Hash]common.Hash)
 func cloneInterpreterState(src InterpreterState) InterpreterState {
 	dst := InterpreterState{
 		PC: src.PC, Stack: append([]uint256.Int(nil), src.Stack...),
-		Memory: append([]byte(nil), src.Memory...), ReturnData: append([]byte(nil), src.ReturnData...), Gas: src.Gas,
+		Memory: append([]byte(nil), src.Memory...), MemoryLastGasCost: src.MemoryLastGasCost,
+		ReturnData: append([]byte(nil), src.ReturnData...), Gas: src.Gas, CallGasTemp: src.CallGasTemp,
 		CallFrames: make([]CallFrameState, len(src.CallFrames)),
 	}
 	for i, frame := range src.CallFrames {
