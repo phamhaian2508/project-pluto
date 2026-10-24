@@ -34,8 +34,8 @@ func newState(t *testing.T, childCode []byte, childGas byte) *state.StateDB {
 	return st
 }
 
-// forwardingContract performs CALL, ignores its success flag, then returns the
-// 32-byte CALL output area. childGas=0 means forward GAS; otherwise PUSH1 gas.
+// forwardingContract gọi CALL, bỏ qua cờ thành công rồi trả về vùng đầu ra CALL
+// dài 32 byte. childGas=0 nghĩa là chuyển tiếp toàn bộ gas; nếu không, dùng gas PUSH1.
 func forwardingContract(child common.Address, childGas byte) []byte {
 	code := []byte{
 		byte(vm.PUSH1), 0x20, byte(vm.PUSH0), byte(vm.PUSH0), byte(vm.PUSH0), byte(vm.PUSH0),

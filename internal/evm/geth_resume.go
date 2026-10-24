@@ -1,9 +1,9 @@
 package evm
 
-// This file is the focused geth-v1.16.8 interpreter adapter selected by the
-// M5.1 decision. It deliberately reuses geth's active jump table and opcode
-// functions, so opcode, dynamic-gas and hard-fork semantics are not duplicated.
-// The unsafe views are guarded by layout tests and the pinned geth version.
+// Tệp này là bộ kết nối trình thông dịch geth v1.16.8 được chọn trong quyết
+// định M5.1. Tệp chủ ý dùng lại bảng nhảy và hàm opcode đang hoạt động của geth,
+// tránh cài đặt trùng ngữ nghĩa opcode, gas động và các đợt hard fork. Các vùng
+// truy cập unsafe được bảo vệ bằng kiểm thử bố cục và phiên bản geth đã ghim.
 
 import (
 	"errors"
@@ -22,7 +22,7 @@ type gethExecutionFunc func(*uint64, *vm.EVM, *vm.ScopeContext) ([]byte, error)
 type gethGasFunc func(*vm.EVM, *vm.Contract, *vm.Stack, *vm.Memory, uint64) (uint64, error)
 type gethMemorySizeFunc func(*vm.Stack) (uint64, bool)
 
-// gethOperationView must stay layout-identical to core/vm.operation.
+// gethOperationView phải giữ bố cục giống hệt core/vm.operation.
 type gethOperationView struct {
 	execute     gethExecutionFunc
 	constantGas uint64
@@ -146,9 +146,9 @@ func restoreGethMemory(data []byte, lastGasCost uint64) (*vm.Memory, error) {
 	return memory, nil
 }
 
-// resumeGethFrame resumes at a tracer checkpoint. Geth invokes OnOpcode after
-// charging constant/dynamic gas but before memory expansion and execution, so
-// the first resumed opcode must execute without charging a second time.
+// resumeGethFrame tiếp tục từ checkpoint của tracer. Geth gọi OnOpcode sau khi
+// tính gas cố định/động nhưng trước khi mở rộng bộ nhớ và thực thi; vì vậy opcode
+// đầu tiên sau khi khôi phục không được tính phí lần thứ hai.
 func resumeGethFrame(evmEnv *vm.EVM, frame CallFrameState, machine InterpreterState, meter *attemptReplayMeter) (ret []byte, gasLeft uint64, runErr error) {
 	if !resumableGethVersionAvailable() {
 		return nil, 0, errResumeUnsupported

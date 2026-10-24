@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-// ERC-20 tối giản (chỉ có transfer/balanceOf), không cần tham số khi deploy
+// Hợp đồng ERC-20 tối giản (chỉ có transfer/balanceOf), không cần tham số khi triển khai.
 contract Token {
-    mapping(address => uint256) public balanceOf; // slot 0
-    uint256 public totalSupply;                   // slot 1
+    mapping(address => uint256) public balanceOf; // Ô lưu trữ 0.
+    uint256 public totalSupply;                   // Ô lưu trữ 1.
 
     event Transfer(address indexed from, address indexed to, uint256 value);
 

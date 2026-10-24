@@ -27,7 +27,7 @@ func TestCheckpointResumeMatchesUninterruptedAndGeth(t *testing.T) {
 	}
 
 	paused := New(gethfork.SampleContract, initialGas, base)
-	stopPC := uint64(9) // immediately after SSTORE
+	stopPC := uint64(9) // Ngay sau SSTORE.
 	if err := paused.RunUntil(&stopPC); !errors.Is(err, errPaused) {
 		t.Fatalf("pause error = %v", err)
 	}

@@ -133,12 +133,12 @@ func runPolicy(dir string, policy policyCase) (demoResult, error) {
 	}, nil
 }
 
-// The demo contract performs a long deterministic prefix, then executes:
+// Hợp đồng minh họa chạy một đoạn lệnh dài có tính tất định, sau đó thực hiện:
 // Counter = SLOAD(0) + 1; SSTORE(0, Counter).
 func demoContractCode() []byte {
 	code := make([]byte, 0, 1120)
 	for i := 0; i < 550; i++ {
-		code = append(code, 0x5f, 0x50) // PUSH0, POP
+		code = append(code, 0x5f, 0x50) // Đẩy 0 lên ngăn xếp, rồi lấy giá trị đó ra.
 	}
 	return append(code, 0x5f, 0x54, 0x60, 0x01, 0x01, 0x5f, 0x55, 0x00)
 }

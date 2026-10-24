@@ -1,5 +1,5 @@
-// Package minivm is an isolated M5.1 spike. It is deliberately limited to the
-// opcodes used by the shared sample contract and is never called by production.
+// Package minivm là bản thử nghiệm cô lập của M5.1. Gói này chỉ hỗ trợ các
+// opcode mà hợp đồng mẫu dùng chung cần đến và không được chương trình chính gọi.
 package minivm
 
 import (
@@ -19,7 +19,7 @@ var supported = map[vm.OpCode]struct{}{
 	vm.SSTORE: {}, vm.MSTORE: {}, vm.RETURN: {},
 }
 
-// SupportedOpcodeCount is intentionally fixed to the sample contract's set.
+// SupportedOpcodeCount được cố định theo tập opcode mà hợp đồng mẫu sử dụng.
 const SupportedOpcodeCount = 7
 
 type Checkpoint struct {
@@ -68,8 +68,8 @@ func (m *Machine) Checkpoint() Checkpoint {
 
 func (m *Machine) Run() error { return m.RunUntil(nil) }
 
-// RunUntil pauses before executing stopPC, making every opcode boundary a
-// checkpoint candidate.
+// RunUntil tạm dừng trước khi thực thi stopPC, nhờ đó mỗi ranh giới opcode đều
+// có thể được chọn làm điểm checkpoint.
 func (m *Machine) RunUntil(stopPC *uint64) error {
 	for !m.halted {
 		if stopPC != nil && m.pc == *stopPC {

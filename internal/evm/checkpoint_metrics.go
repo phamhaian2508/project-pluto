@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// CheckpointMetrics is observational only. None of these fields is read by
-// transaction execution, validation, checkpoint selection, or state commit.
+// CheckpointMetrics chỉ dùng để quan sát. Không trường nào được đọc trong quá
+// trình thực thi giao dịch, xác thực, chọn checkpoint hoặc chốt trạng thái.
 type CheckpointMetrics struct {
 	ReplayedOpcodes       uint64
 	ReplayedGas           uint64
@@ -24,9 +24,9 @@ type CheckpointMetrics struct {
 	ReusedPositions       []uint64
 }
 
-// CheckpointTraceEvent is a deterministic, read-only explanation of one
-// optimistic conflict. It is populated by the production resolver after the
-// recovery decision and is never consulted by execution or consensus.
+// CheckpointTraceEvent giải thích một xung đột lạc quan theo cách tất định và
+// chỉ đọc. Bộ phân giải của chương trình điền dữ liệu sau khi quyết định khôi
+// phục; quá trình thực thi và đồng thuận không sử dụng dữ liệu này.
 type CheckpointTraceEvent struct {
 	TxIndex             int
 	FailedRead          int
@@ -66,7 +66,7 @@ func (p CheckpointPolicy) String() string {
 	}
 }
 
-// WriteCheckpointCSV writes one stable CSV record for every supplied run.
+// WriteCheckpointCSV ghi một dòng CSV ổn định cho mỗi lần chạy được cung cấp.
 func WriteCheckpointCSV(w io.Writer, rows []CheckpointCSVRow) error {
 	writer := csv.NewWriter(w)
 	if err := writer.Write(CheckpointCSVHeader); err != nil {

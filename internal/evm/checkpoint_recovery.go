@@ -10,9 +10,9 @@ const maxCheckpointRetries = 2
 
 var errResumeUnsupported = errors.New("execution state does not support checkpoint resume")
 
-// attemptCheckpoint binds an interpreter/state snapshot to the read boundary
-// and versions that were valid when it was captured. beforeRead is zero-based:
-// value k means the checkpoint is immediately before read k.
+// attemptCheckpoint gắn ảnh chụp của trình thông dịch/trạng thái với ranh giới
+// đọc và các phiên bản còn hợp lệ tại lúc tạo ảnh chụp. beforeRead đánh số từ 0:
+// giá trị k nghĩa là checkpoint nằm ngay trước lần đọc thứ k.
 type attemptCheckpoint struct {
 	beforeRead     int
 	opcodePosition uint64
@@ -42,8 +42,9 @@ type recoveryOutcome struct {
 	reusedPositions   []uint64
 }
 
-// recoverOptimisticAttempt never applies state. It returns only an isolated
-// attempt; the ordered resolver remains the sole place that can commit a delta.
+// recoverOptimisticAttempt không bao giờ áp dụng trạng thái. Hàm chỉ trả về một
+// lần thực thi cô lập; bộ phân giải có thứ tự vẫn là nơi duy nhất được chốt phần
+// thay đổi.
 func recoverOptimisticAttempt(versions *MVMemory, failed *optimisticAttempt, failedRead int, firstIncarnation uint64, runner attemptRecoveryRunner) (recoveryOutcome, error) {
 	if versions == nil || failed == nil || runner == nil {
 		return recoveryOutcome{}, errors.New("checkpoint recovery requires versions, failed attempt and runner")

@@ -80,8 +80,8 @@ func newCheckpointResumeBenchmarkWorkload(t testing.TB, txCount int) differentia
 	return workload
 }
 
-// TestCheckpointPolicyCSVExport runs every policy against the same deterministic
-// workload. Set PLUTO_CHECKPOINT_CSV to persist the otherwise in-memory CSV.
+// TestCheckpointPolicyCSVExport chạy mọi chính sách trên cùng workload tất định.
+// Đặt PLUTO_CHECKPOINT_CSV để lưu tệp CSV thay vì chỉ giữ trong bộ nhớ.
 func TestCheckpointPolicyCSVExport(t *testing.T) {
 	var output bytes.Buffer
 	if err := evm.WriteCheckpointCSV(&output, checkpointMetricRows(t)); err != nil {

@@ -1,5 +1,5 @@
-// Package gethfork is an isolated M5.1 feasibility spike. It intentionally
-// does not participate in Pluto's production execution path.
+// Package gethfork là bản thử nghiệm khả thi cô lập của M5.1. Gói này không
+// tham gia đường thực thi chính thức của Pluto.
 package gethfork
 
 import (
@@ -11,8 +11,8 @@ import (
 	"github.com/holiman/uint256"
 )
 
-// SampleContract is shared by the M5.1 spikes. It increments storage slot 1
-// by three and returns the resulting 32-byte word.
+// SampleContract được dùng chung bởi các bản thử nghiệm M5.1. Hợp đồng tăng ô
+// lưu trữ 1 thêm ba đơn vị rồi trả về kết quả dạng từ 32 byte.
 var SampleContract = []byte{
 	byte(vm.PUSH1), 0x01, byte(vm.SLOAD),
 	byte(vm.PUSH1), 0x03, byte(vm.ADD),
@@ -24,8 +24,8 @@ var SampleContract = []byte{
 
 var errPaused = errors.New("interpreter paused at checkpoint")
 
-// Checkpoint contains the mutable interpreter and state-overlay fields that a
-// resumable fork needs to own. Slices and maps are deep-copied.
+// Checkpoint chứa các trường trình thông dịch và lớp phủ trạng thái có thể thay
+// đổi mà bản rẽ nhánh có thể tiếp tục cần sở hữu. Slice và map được sao chép sâu.
 type Checkpoint struct {
 	PC         uint64
 	Stack      []uint256.Int
@@ -62,8 +62,8 @@ func cloneStorage(src map[common.Hash]common.Hash) map[common.Hash]common.Hash {
 	return dst
 }
 
-// interpreter is a deliberately narrow copy of geth's contextual run-loop
-// shape. Only the opcodes required by the spike fixture are implemented.
+// interpreter là bản sao có chủ ý giới hạn của cấu trúc vòng lặp theo ngữ cảnh
+// trong geth. Chỉ các opcode cần cho dữ liệu thử nghiệm mới được cài đặt.
 type interpreter struct {
 	code       []byte
 	pc         uint64
@@ -114,8 +114,8 @@ func (in *interpreter) checkpoint() Checkpoint {
 
 func (in *interpreter) run() error { return in.runUntil(nil) }
 
-// runUntil follows geth's fetch/charge/execute loop shape. A stopPC pauses
-// before that opcode, so the checkpoint resumes without repeating it.
+// runUntil theo cấu trúc vòng lặp lấy lệnh/tính phí/thực thi của geth. stopPC
+// tạm dừng trước opcode đó để khi khôi phục checkpoint không chạy lặp lại lệnh.
 func (in *interpreter) runUntil(stopPC *uint64) error {
 	for !in.halted {
 		if stopPC != nil && in.pc == *stopPC {

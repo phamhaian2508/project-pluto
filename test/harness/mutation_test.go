@@ -18,9 +18,8 @@ const (
 	mutateCommittedStorage
 )
 
-// mutationExecutor is deliberately faulty and exists only in tests. It models
-// two classes of regressions: accepting an invalid transaction and committing
-// a different storage result.
+// mutationExecutor được cố ý tạo lỗi và chỉ dùng trong kiểm thử. Nó mô phỏng
+// hai dạng hồi quy: chấp nhận giao dịch không hợp lệ và chốt sai kết quả lưu trữ.
 type mutationExecutor struct {
 	base   evm.Executor
 	kind   mutationKind

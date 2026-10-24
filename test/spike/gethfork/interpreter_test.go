@@ -21,7 +21,7 @@ func TestCopiedGethLoopCheckpointResumeMatchesUninterruptedAndGeth(t *testing.T)
 	}
 
 	paused := newInterpreter(SampleContract, initialGas, base)
-	stopPC := uint64(16) // after SSTORE and MSTORE; stack contains RETURN size
+	stopPC := uint64(16) // Sau SSTORE và MSTORE; ngăn xếp chứa kích thước RETURN.
 	if err := paused.runUntil(&stopPC); !errors.Is(err, errPaused) {
 		t.Fatalf("pause error = %v, want %v", err, errPaused)
 	}

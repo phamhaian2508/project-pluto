@@ -94,3 +94,23 @@ on deterministic opcode/read/conflict inputs. The production adapter resumes
 top-level geth frames from captured PC/stack/memory/gas state. Unsupported
 boundaries, such as contract creation and Verkle/EIP-4762 execution, are
 reported as safe P0 full fallbacks.
+
+## Báo cáo dễ đọc: executor tuần tự và song song
+
+Chạy bài sau để tự in bảng so sánh cho 128, 512 và 1.024 giao dịch, với
+executor song song dùng 1, 2, 4 và 8 worker:
+
+```powershell
+go test ./test/harness -run '^TestSequentialParallelPerformanceReport$' -count=1 -v
+```
+
+Bài kiểm tra chạy cùng workload tất định qua executor tuần tự, các cấu hình
+song song và geth. Nếu trạng thái tài khoản, nonce, code, storage, kết quả giao
+dịch, gas, log, receipt hoặc state root Pluto khác nhau, test sẽ thất bại và in
+ra điểm khác đầu tiên. Báo cáo dùng trung vị của nhiều lần đo; cột ổn định cảnh
+báo khi độ dao động vượt 10%.
+
+Đây là phép đo `ExecuteBlock` tại executor. Thời gian tạo node, RPC, nạp state
+và khởi động mạng không nằm trong phép đo; số byte cấp phát cũng không phải RAM
+đỉnh. Vì vậy hãy dùng kết quả để so sánh engine trên đúng workload này, không
+diễn giải trực tiếp thành TPS của cả mạng.

@@ -45,8 +45,8 @@ func (api *EthAPI) Mining() bool               { return false }
 func (api *EthAPI) Hashrate() hexutil.Uint64   { return 0 }
 func (api *EthAPI) Accounts() []common.Address { return []common.Address{} }
 
-// SendRawTransaction submits the exact Ethereum transaction bytes to the
-// CometBFT mempool and returns the Ethereum transaction hash after CheckTx.
+// SendRawTransaction gửi nguyên byte giao dịch Ethereum vào mempool CometBFT
+// và trả về mã băm giao dịch Ethereum sau khi CheckTx xử lý.
 func (api *EthAPI) SendRawTransaction(ctx context.Context, raw hexutil.Bytes) (common.Hash, error) {
 	if api.broadcaster == nil {
 		return common.Hash{}, errors.New("transaction broadcasting is unavailable")
@@ -435,10 +435,10 @@ func (api *EthAPI) requireLatest(block *gethrpc.BlockNumberOrHash) error {
 		if err != nil {
 			return err
 		}
-		// Wallets may pin read requests to a recently observed block number.
-		// Pluto currently keeps only the latest state snapshot, so serve those
-		// reads from the current state when the requested height is not in the
-		// future. This is compatibility behavior, not historical-state support.
+		// Ví có thể yêu cầu đọc trạng thái tại số khối vừa quan sát được.
+		// Pluto hiện chỉ giữ ảnh chụp trạng thái mới nhất, nên dùng trạng thái hiện
+		// tại nếu chiều cao yêu cầu không nằm trong tương lai. Đây là cách tương
+		// thích với ví, không phải hỗ trợ đọc lại trạng thái lịch sử.
 		if resolved > api.app.CurrentHeight() {
 			return errors.New("historical state is not available")
 		}

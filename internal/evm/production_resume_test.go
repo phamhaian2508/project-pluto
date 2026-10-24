@@ -17,13 +17,13 @@ import (
 func productionResumeCode(prefixPairs int) []byte {
 	code := make([]byte, 0, prefixPairs*2+20)
 	for i := 0; i < prefixPairs; i++ {
-		code = append(code, 0x5f, 0x50) // PUSH0 POP
+		code = append(code, 0x5f, 0x50) // PUSH0 rồi POP.
 	}
 	return append(code,
-		0x5f, 0x54, 0x60, 0x01, 0x01, 0x5f, 0x55, // slot[0]++
-		0x5f, 0x54, 0x5f, 0x52, // memory[0:32] = slot[0]
-		0x60, 0x20, 0x5f, 0xa0, // LOG0(memory[0:32])
-		0x60, 0x20, 0x5f, 0xf3, // RETURN(memory[0:32])
+		0x5f, 0x54, 0x60, 0x01, 0x01, 0x5f, 0x55, // Tăng ô lưu trữ 0 thêm 1.
+		0x5f, 0x54, 0x5f, 0x52, // Ghi slot[0] vào memory[0:32].
+		0x60, 0x20, 0x5f, 0xa0, // Phát LOG0(memory[0:32]).
+		0x60, 0x20, 0x5f, 0xf3, // Trả về memory[0:32].
 	)
 }
 
@@ -234,11 +234,11 @@ func failureResumeWrapper(target common.Address, revertAfterCall, limitedGas boo
 	code = append(code, 0x36, 0x5f, 0x5f, 0x37, 0x5f, 0x5f, 0x36, 0x5f, 0x5f, 0x73)
 	code = append(code, target.Bytes()...)
 	if limitedGas {
-		code = append(code, 0x61, 0x08, 0x98) // 2,200 gas: reaches SLOAD, then OOG at SSTORE.
+		code = append(code, 0x61, 0x08, 0x98) // 2.200 gas: đủ đến SLOAD rồi hết gas tại SSTORE.
 	} else {
-		code = append(code, 0x5a) // GAS
+		code = append(code, 0x5a) // Opcode GAS.
 	}
-	code = append(code, 0xf1, 0x50) // CALL, discard success flag
+	code = append(code, 0xf1, 0x50) // Gọi CALL rồi bỏ cờ thành công.
 	if revertAfterCall {
 		return append(code, 0x5f, 0x5f, 0xfd)
 	}

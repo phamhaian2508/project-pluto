@@ -10,17 +10,17 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 )
 
-// NewOverlay creates a transaction-local StateDB that reads through to an
-// immutable parent snapshot and stores only accounts/slots it touches itself.
+// NewOverlay tạo StateDB riêng cho giao dịch, đọc xuyên qua ảnh chụp cha bất
+// biến và chỉ lưu các tài khoản/ô lưu trữ mà chính giao dịch đó truy cập.
 func (s *PebbleStateDB) NewOverlay() *PebbleStateDB {
 	overlay := NewPebbleStateDB(s.db)
 	overlay.overlayBase = s
 	return overlay
 }
 
-// Fork creates an isolated, transaction-boundary snapshot. Uncached reads
-// still use Pebble's immutable committed view, while all maps and journals
-// that can be mutated by the EVM are private to the fork.
+// Fork tạo một bản chụp cô lập tại ranh giới giao dịch. Các lần đọc chưa lưu
+// đệm vẫn dùng trạng thái đã chốt bất biến của Pebble; mọi map và nhật ký mà EVM
+// có thể thay đổi đều thuộc riêng về bản sao này.
 func (s *PebbleStateDB) Fork() *PebbleStateDB {
 	fork := NewPebbleStateDB(s.db)
 	fork.overlayBase = s.overlayBase
@@ -76,9 +76,9 @@ func cloneLogs(input []*types.Log) []*types.Log {
 	return output
 }
 
-// ApplyPendingWrites imports an accepted speculative delta into the canonical
-// block StateDB cache. It does not touch Pebble; App.Commit remains the only
-// persistence boundary.
+// ApplyPendingWrites nhập phần thay đổi đầu cơ đã được chấp nhận vào bộ đệm
+// StateDB chuẩn của khối. Hàm không ghi vào Pebble; App.Commit vẫn là nơi duy
+// nhất lưu trạng thái bền vững.
 func (s *PebbleStateDB) ApplyPendingWrites(writes map[string][]byte) error {
 	for key, value := range writes {
 		switch {

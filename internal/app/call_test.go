@@ -13,7 +13,7 @@ func TestCallAndEstimateGasDoNotChangeState(t *testing.T) {
 	contract := common.HexToAddress("0x000000000000000000000000000000000000ca11")
 	state := evm.NewPebbleStateDB(app.db)
 	state.CreateAccount(contract)
-	// Store 1 in slot 0, then return the 32-byte value 1.
+	// Ghi 1 vào ô 0, sau đó trả về giá trị 1 dạng 32 byte.
 	state.SetCode(contract, common.FromHex("0x6001600055600160005260206000f3"), 0)
 	if err := state.Commit(); err != nil {
 		t.Fatal(err)
