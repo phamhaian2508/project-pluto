@@ -11,8 +11,8 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
-// CallArgs describes a transaction-like EVM simulation. The supplied state is
-// mutated only in memory and must be discarded by the caller after execution.
+// CallArgs mô tả một lần mô phỏng EVM tương tự giao dịch. Trạng thái được cung
+// cấp chỉ thay đổi trong bộ nhớ và bên gọi phải loại bỏ sau khi thực thi.
 type CallArgs struct {
 	From       common.Address
 	To         *common.Address
@@ -30,7 +30,7 @@ type CallResult struct {
 	Err        error
 }
 
-// ExecuteCall runs a transaction-like message without committing the state.
+// ExecuteCall thực thi một thông điệp tương tự giao dịch nhưng không chốt trạng thái.
 func ExecuteCall(state *PebbleStateDB, chainConfig *params.ChainConfig, env BlockEnv, args CallArgs) (*CallResult, error) {
 	if state == nil || chainConfig == nil {
 		return nil, fmt.Errorf("call requires state and chain config")

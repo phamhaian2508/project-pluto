@@ -1,5 +1,5 @@
-// Package callframe is an isolated M5.1 spike for checkpoints at complete EVM
-// call boundaries. It is not used by Pluto's production executor.
+// Package callframe là bản thử nghiệm cô lập của M5.1 về checkpoint tại ranh
+// giới hoàn chỉnh của lời gọi EVM. Bộ thực thi chính của Pluto không dùng gói này.
 package callframe
 
 import (
@@ -39,9 +39,9 @@ func (r *recorder) hooks() *tracing.Hooks {
 	}
 }
 
-// boundaryCheckpoint deliberately stores only data available outside the EVM.
-// Restoring it permits replaying the entire top-level frame, not resuming a
-// suspended parent interpreter after a nested CALL.
+// boundaryCheckpoint chỉ lưu dữ liệu có thể lấy bên ngoài EVM. Khôi phục điểm
+// này cho phép chạy lại toàn bộ khung ngoài cùng, chứ không tiếp tục trình thông
+// dịch cha đang tạm dừng sau một CALL lồng nhau.
 type boundaryCheckpoint struct {
 	snapshot int
 	to       common.Address
@@ -55,7 +55,7 @@ func takeBoundaryCheckpoint(st *state.StateDB, to common.Address, input []byte, 
 
 func (c boundaryCheckpoint) restore(st *state.StateDB) { st.RevertToSnapshot(c.snapshot) }
 
-// nestedCheckpoint documents the public-hook limitation: callExit has the
-// child's result but no parent PC, stack, memory, remaining gas or return-data
-// buffer, so an exact continuation cannot be constructed.
+// nestedCheckpoint mô tả giới hạn của móc công khai: callExit có kết quả của lời
+// gọi con nhưng không có PC, ngăn xếp, bộ nhớ, gas còn lại hoặc vùng dữ liệu trả
+// về của lời gọi cha, nên không thể tạo điểm tiếp tục chính xác.
 func nestedCheckpoint(callExit) error { return errNestedResumeUnsupported }

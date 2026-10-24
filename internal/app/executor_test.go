@@ -156,7 +156,7 @@ func TestCommitStoresEthereumBlockTransactionReceiptLogsAndLocation(t *testing.T
 	contract := common.HexToAddress("0x000000000000000000000000000000000000cafe")
 	state := evm.NewPebbleStateDB(app.db)
 	state.CreateAccount(contract)
-	state.SetCode(contract, common.FromHex("0x60006000a000"), 0) // LOG0 then STOP
+	state.SetCode(contract, common.FromHex("0x60006000a000"), 0) // LOG0 rồi dừng thực thi.
 	if err := state.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -329,8 +329,8 @@ func TestSequentialExecutorOutOfGasAndRevert(t *testing.T) {
 	contract := common.HexToAddress("0x000000000000000000000000000000000000cafe")
 	state := evm.NewPebbleStateDB(app.db)
 	state.CreateAccount(contract)
-	// Infinite jump exhausts the call's gas; the second runtime writes slot 0
-	// and reverts, proving reverted storage does not escape the EVM frame.
+	// Vòng nhảy vô hạn làm lời gọi cạn gas; mã chạy thứ hai ghi vào ô 0 rồi
+	// revert, chứng minh dữ liệu lưu trữ đã hoàn tác không thoát khỏi khung EVM.
 	state.SetCode(contract, common.FromHex("0x600056"), 0)
 	if err := state.Commit(); err != nil {
 		t.Fatal(err)
@@ -365,7 +365,7 @@ func TestSequentialExecutorOutOfGasAndRevert(t *testing.T) {
 func TestSequentialExecutorContractCreationAndShanghai(t *testing.T) {
 	app, _, key := testApp(t)
 	from := crypto.PubkeyToAddress(key.PublicKey)
-	// Constructor returns PUSH0/PUSH0/REVERT, proving Shanghai opcodes are enabled.
+	// Hàm khởi tạo trả về PUSH0/PUSH0/REVERT, chứng minh opcode Shanghai đã bật.
 	initCode := common.FromHex("0x6003600c60003960036000f35f5ffd")
 	tx := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: new(big.Int), Gas: 100000, Data: initCode})
 	signed, err := types.SignTx(tx, types.LatestSignerForChainID(chainID), key)
@@ -392,7 +392,7 @@ func TestSequentialExecutorNestedContractCall(t *testing.T) {
 	parent := common.HexToAddress("0x000000000000000000000000000000000000c002")
 	state := evm.NewPebbleStateDB(app.db)
 	state.CreateAccount(child)
-	state.SetCode(child, common.FromHex("0x00"), 0) // STOP
+	state.SetCode(child, common.FromHex("0x00"), 0) // STOP: dừng thực thi.
 	state.CreateAccount(parent)
 	parentCode := append(common.FromHex("0x6000600060006000600073"), child.Bytes()...)
 	parentCode = append(parentCode, common.FromHex("0x61fffff15000")...)
@@ -420,7 +420,7 @@ func TestSequentialExecutorSSTORERefundDoesNotLeakBetweenTransactions(t *testing
 	state := evm.NewPebbleStateDB(app.db)
 	state.CreateAccount(contract)
 	state.SetState(contract, common.Hash{}, common.BigToHash(big.NewInt(1)))
-	state.SetCode(contract, common.FromHex("0x600060005500"), 0) // clear slot 0
+	state.SetCode(contract, common.FromHex("0x600060005500"), 0) // Xóa ô 0.
 	if err := state.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +437,7 @@ func TestSequentialExecutorSSTORERefundDoesNotLeakBetweenTransactions(t *testing
 	if got := state.GetState(contract, common.Hash{}); got != (common.Hash{}) {
 		t.Fatalf("cleared slot = %s", got)
 	}
-	state.SetCode(contract, common.FromHex("0x600260005500"), 0) // set slot 0 to 2
+	state.SetCode(contract, common.FromHex("0x600260005500"), 0) // Đặt ô 0 thành 2.
 	if err := state.Commit(); err != nil {
 		t.Fatal(err)
 	}
@@ -557,7 +557,7 @@ func TestStateRootIncludesStorageChanges(t *testing.T) {
 
 func TestSequentialExecutorUsesDeterministicBlockContext(t *testing.T) {
 	app, _, key := testApp(t)
-	runBlock(t, app, 1) // stores this block hash for a later BLOCKHASH opcode
+	runBlock(t, app, 1) // Lưu mã băm khối này để opcode BLOCKHASH dùng sau đó.
 	ancestor := common.BytesToHash([]byte{0xa1, 0xb2, 0xc3})
 	if err := app.db.Set(blockHashKey(1), ancestor.Bytes()); err != nil {
 		t.Fatal(err)
@@ -569,9 +569,9 @@ func TestSequentialExecutorUsesDeterministicBlockContext(t *testing.T) {
 		code    string
 		want    common.Hash
 	}{
-		{common.HexToAddress("0x1001"), "0x6001405f5260205ff3", ancestor},                         // BLOCKHASH(1)
-		{common.HexToAddress("0x1002"), "0x415f5260205ff3", common.BytesToHash(coinbase.Bytes())}, // COINBASE
-		{common.HexToAddress("0x1003"), "0x445f5260205ff3", random},                               // PREVRANDAO
+		{common.HexToAddress("0x1001"), "0x6001405f5260205ff3", ancestor},                         // Mã băm khối BLOCKHASH(1).
+		{common.HexToAddress("0x1002"), "0x415f5260205ff3", common.BytesToHash(coinbase.Bytes())}, // Giá trị COINBASE.
+		{common.HexToAddress("0x1003"), "0x445f5260205ff3", random},                               // Giá trị PREVRANDAO.
 	}
 	state := evm.NewPebbleStateDB(app.db)
 	txs := make([]*types.Transaction, len(cases))

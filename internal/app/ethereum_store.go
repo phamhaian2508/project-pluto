@@ -12,7 +12,7 @@ import (
 	"github.com/phamhaian2508/project-pluto/internal/evm"
 )
 
-// EthereumBlock stores the Ethereum-facing metadata for a committed block.
+// EthereumBlock lưu siêu dữ liệu của khối đã chốt theo định dạng phía Ethereum.
 type EthereumBlock struct {
 	Number       uint64         `json:"number"`
 	Hash         common.Hash    `json:"hash"`
@@ -26,7 +26,7 @@ type EthereumBlock struct {
 	Transactions []common.Hash  `json:"transactions"`
 }
 
-// EthereumTransaction stores canonical transaction bytes and their block position.
+// EthereumTransaction lưu byte giao dịch chuẩn cùng vị trí của giao dịch trong khối.
 type EthereumTransaction struct {
 	Hash             common.Hash `json:"hash"`
 	Raw              []byte      `json:"raw"`
@@ -35,7 +35,7 @@ type EthereumTransaction struct {
 	TransactionIndex uint64      `json:"transactionIndex"`
 }
 
-// EthereumReceipt stores the execution result required by Ethereum clients.
+// EthereumReceipt lưu kết quả thực thi mà các ứng dụng khách Ethereum cần.
 type EthereumReceipt struct {
 	TransactionHash   common.Hash     `json:"transactionHash"`
 	TransactionIndex  uint64          `json:"transactionIndex"`
@@ -51,7 +51,7 @@ type EthereumReceipt struct {
 	Logs              []*types.Log    `json:"logs"`
 }
 
-// EthereumTransactionLocation is the tx-hash index into a block.
+// EthereumTransactionLocation là chỉ mục từ mã băm giao dịch đến vị trí trong khối.
 type EthereumTransactionLocation struct {
 	BlockHash        common.Hash `json:"blockHash"`
 	BlockNumber      uint64      `json:"blockNumber"`

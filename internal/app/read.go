@@ -7,7 +7,7 @@ import (
 	"github.com/phamhaian2508/project-pluto/internal/evm"
 )
 
-// CurrentHeight returns the latest committed block height.
+// CurrentHeight trả về chiều cao của khối đã chốt mới nhất.
 func (app *App) CurrentHeight() uint64 {
 	if app.currentHeight < 0 {
 		return 0

@@ -22,8 +22,8 @@ type deterministicAccount struct {
 	address common.Address
 }
 
-// newAccountPool derives repeatable test accounts from a public seed. No random
-// key or external wallet state is used by the harness.
+// newAccountPool tạo các tài khoản kiểm thử có thể tái lập từ một seed công
+// khai. Bộ kiểm thử không dùng khóa ngẫu nhiên hay dữ liệu ví bên ngoài.
 func newAccountPool(t testing.TB, seed uint64, count int) []deterministicAccount {
 	t.Helper()
 	if count < 2 {
@@ -114,48 +114,49 @@ func newCounterContentionWorkload(t testing.TB, increments int) differentialWork
 	}
 }
 
-// forwarderCreationCode makes a tiny Shanghai contract which forwards its
-// calldata to a fixed target with CALL. This gives the workload a real nested
-// contract call without depending on a Solidity compiler at test time.
+// forwarderCreationCode tạo hợp đồng Shanghai nhỏ, chuyển calldata đến một
+// đích cố định bằng CALL. Nhờ vậy workload có lời gọi hợp đồng lồng nhau thực
+// tế mà không cần trình biên dịch Solidity khi chạy kiểm thử.
 func forwarderCreationCode(target common.Address) []byte {
 	runtime := []byte{
-		0x36, 0x5f, 0x5f, 0x37, // copy the complete calldata to memory[0]
-		0x5f, 0x5f, 0x36, 0x5f, 0x5f, 0x73, // CALL output/input/value arguments
+		0x36, 0x5f, 0x5f, 0x37, // Sao chép toàn bộ calldata vào memory[0].
+		0x5f, 0x5f, 0x36, 0x5f, 0x5f, 0x73, // Các đối số đầu ra/đầu vào/giá trị của CALL.
 	}
 	runtime = append(runtime, target.Bytes()...)
-	runtime = append(runtime, 0x5a, 0xf1, 0x50, 0x5f, 0x5f, 0xf3) // GAS CALL POP RETURN(0, 0)
+	runtime = append(runtime, 0x5a, 0xf1, 0x50, 0x5f, 0x5f, 0xf3) // GAS, CALL, POP, RETURN(0, 0).
 	length := len(runtime)
-	// PUSH2 length, PUSH2 13, PUSH0, CODECOPY, PUSH2 length, PUSH0, RETURN.
+	// Đẩy độ dài bằng PUSH2, đẩy vị trí 13, PUSH0, CODECOPY, rồi đẩy độ dài,
+	// PUSH0 và RETURN.
 	init := []byte{0x61, byte(length >> 8), byte(length), 0x61, 0, 13, 0x5f, 0x39, 0x61, byte(length >> 8), byte(length), 0x5f, 0xf3}
 	return append(init, runtime...)
 }
 
-// simpleAMMCreationCode returns a compact test fixture implementing a
-// constant-product swap. It stores reserve0/reserve1 at slots 0/1 and exposes
-// swap(uint256 amountIn), returning floor(amountIn*reserve1/(reserve0+amountIn)).
-// Keeping this tiny fixture in Go avoids making test execution depend on solc.
+// simpleAMMCreationCode trả về mã kiểm thử gọn để thực hiện hoán đổi theo công
+// thức tích số không đổi. Mã lưu reserve0/reserve1 tại ô 0/1 và cung cấp hàm
+// swap(uint256 amountIn), trả về floor(amountIn*reserve1/(reserve0+amountIn)).
+// Giữ mã kiểm thử nhỏ này trong Go để bài kiểm thử không phụ thuộc solc.
 func simpleAMMCreationCode() []byte {
 	selector := crypto.Keccak256([]byte("swap(uint256)"))[:4]
 	runtime := []byte{
-		0x5f, 0x35, 0x60, 0xe0, 0x1c, // selector = calldata[0:4] >> 224
+		0x5f, 0x35, 0x60, 0xe0, 0x1c, // selector = calldata[0:4] >> 224.
 		0x63, selector[0], selector[1], selector[2], selector[3], 0x14,
-		0x60, 0x11, 0x57, // jump to function if selector matches
-		0x5f, 0x5f, 0xfd, // unknown selector: revert(0, 0)
+		0x60, 0x11, 0x57, // Nhảy đến hàm nếu selector khớp.
+		0x5f, 0x5f, 0xfd, // Selector không được hỗ trợ: revert(0, 0).
 		0x5b,
-		0x60, 0x04, 0x35, 0x5f, 0x52, // amountIn -> memory[0]
-		0x5f, 0x54, 0x60, 0x01, 0x54, // reserve0, reserve1
-		0x81, 0x5f, 0x51, 0x01, 0x60, 0x40, 0x52, // denominator -> memory[0x40]
-		0x5f, 0x51, 0x81, 0x02, 0x60, 0x60, 0x52, // numerator -> memory[0x60]
-		0x60, 0x40, 0x51, 0x60, 0x60, 0x51, 0x04, 0x60, 0x80, 0x52, // amountOut -> memory[0x80]
-		0x81, 0x5f, 0x51, 0x01, 0x5f, 0x55, // reserve0 += amountIn
-		0x60, 0x80, 0x51, 0x90, 0x03, 0x60, 0x01, 0x55, // reserve1 -= amountOut
-		0x60, 0x80, 0x51, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3, // return amountOut
+		0x60, 0x04, 0x35, 0x5f, 0x52, // Đưa amountIn vào memory[0].
+		0x5f, 0x54, 0x60, 0x01, 0x54, // Đọc reserve0 và reserve1.
+		0x81, 0x5f, 0x51, 0x01, 0x60, 0x40, 0x52, // Đưa mẫu số vào memory[0x40].
+		0x5f, 0x51, 0x81, 0x02, 0x60, 0x60, 0x52, // Đưa tử số vào memory[0x60].
+		0x60, 0x40, 0x51, 0x60, 0x60, 0x51, 0x04, 0x60, 0x80, 0x52, // Đưa amountOut vào memory[0x80].
+		0x81, 0x5f, 0x51, 0x01, 0x5f, 0x55, // reserve0 += amountIn.
+		0x60, 0x80, 0x51, 0x90, 0x03, 0x60, 0x01, 0x55, // reserve1 -= amountOut.
+		0x60, 0x80, 0x51, 0x5f, 0x52, 0x60, 0x20, 0x5f, 0xf3, // Trả về amountOut.
 	}
 	length := len(runtime)
 	const returnCodeOffset = 28
 	init := []byte{
-		0x63, 0x00, 0x0f, 0x42, 0x40, 0x5f, 0x55, // reserve0 = 1,000,000
-		0x63, 0x00, 0x0f, 0x42, 0x40, 0x60, 0x01, 0x55, // reserve1 = 1,000,000
+		0x63, 0x00, 0x0f, 0x42, 0x40, 0x5f, 0x55, // reserve0 = 1.000.000.
+		0x63, 0x00, 0x0f, 0x42, 0x40, 0x60, 0x01, 0x55, // reserve1 = 1.000.000.
 		0x61, byte(length >> 8), byte(length), 0x61, 0, returnCodeOffset, 0x5f, 0x39,
 		0x61, byte(length >> 8), byte(length), 0x5f, 0xf3,
 	}
@@ -214,11 +215,11 @@ func newFailureModesDifferentialWorkload(t testing.TB) differentialWorkload {
 	contract := crypto.CreateAddress(sender.address, 0)
 	transactions := []*types.Transaction{
 		signedTx(t, sender.keyHex, 0, 3_000_000, nil, new(big.Int), readCreationCode(t, "Counter")),
-		// The intrinsic gas is valid, but leaves no gas for increment() execution.
+		// Gas cơ bản hợp lệ nhưng không còn gas cho hàm increment() thực thi.
 		signedTx(t, sender.keyHex, 1, 22_000, &contract, new(big.Int), common.FromHex("0xd09de08a")),
-		// An explicit revert after the out-of-gas transaction.
+		// Chủ động revert sau giao dịch hết gas.
 		signedTx(t, sender.keyHex, 2, 100_000, &contract, new(big.Int), common.FromHex("0xa9cc4718")),
-		// Nonce gap: invalid transaction, which must not consume the sender nonce.
+		// Nonce bị nhảy: giao dịch không hợp lệ và không được làm tăng nonce người gửi.
 		signedTx(t, sender.keyHex, 7, 21_000, &pool[1].address, big.NewInt(1), nil),
 	}
 	return differentialWorkload{
@@ -231,8 +232,8 @@ func newFailureModesDifferentialWorkload(t testing.TB) differentialWorkload {
 	}
 }
 
-// newTransferWorkload produces signed transfers from a seeded account pool.
-// hotWalletRatio controls how often account 0 is selected as the sender.
+// newTransferWorkload tạo các giao dịch chuyển tiền đã ký từ nhóm tài khoản có
+// seed. hotWalletRatio quy định tần suất chọn tài khoản 0 làm người gửi.
 func newTransferWorkload(t testing.TB, seed uint64, txCount, accountCount int, hotWalletRatio float64) differentialWorkload {
 	t.Helper()
 	if txCount <= 0 || accountCount < 2 || hotWalletRatio < 0 || hotWalletRatio > 1 {
@@ -273,10 +274,10 @@ func newTransferWorkload(t testing.TB, seed uint64, txCount, accountCount int, h
 	}
 }
 
-// newMixedWorkload generates a replayable block with ordinary transfers,
-// contract storage writes, ERC-20 transfers, reverts, out-of-gas calls, and a
-// configurable hot sender. The seed is included in the workload name so a
-// failing CI log contains the exact input needed to reproduce the case.
+// newMixedWorkload tạo khối có thể chạy lại, gồm chuyển tiền thông thường, ghi
+// vùng lưu trữ hợp đồng, chuyển ERC-20, revert, lời gọi hết gas và người gửi
+// thường xuyên được chọn. Seed nằm trong tên workload để nhật ký CI khi lỗi có
+// đủ đầu vào tái hiện chính xác tình huống.
 func newMixedWorkload(t testing.TB, seed uint64, txCount, accountCount int, hotWalletRatio float64) differentialWorkload {
 	t.Helper()
 	if txCount < 2 || accountCount < 2 || hotWalletRatio < 0 || hotWalletRatio > 1 {
@@ -323,7 +324,7 @@ func newMixedWorkload(t testing.TB, seed uint64, txCount, accountCount int, hotW
 		case action < 90:
 			tx = signedTx(t, sender.keyHex, nonces[senderIndex], 100_000, &counter, new(big.Int), common.FromHex("0xa9cc4718"))
 		default:
-			// 10% calls pass intrinsic-gas validation but run out of execution gas.
+			// 10% lời gọi qua bước kiểm tra gas cơ bản nhưng hết gas khi thực thi.
 			tx = signedTx(t, sender.keyHex, nonces[senderIndex], 22_000, &counter, new(big.Int), common.FromHex("0xd09de08a"))
 		}
 		transactions = append(transactions, tx)

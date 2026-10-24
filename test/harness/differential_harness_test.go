@@ -67,9 +67,9 @@ func signedTx(t testing.TB, keyHex string, nonce, gas uint64, to *common.Address
 	return tx
 }
 
-// This test harness deliberately compares observable transaction results and
-// account state, not state roots: Pluto currently uses a custom app hash while
-// geth uses an Ethereum Merkle Patricia trie root.
+// Bộ kiểm thử này chủ ý so sánh kết quả giao dịch và trạng thái tài khoản có
+// thể quan sát, thay vì mã gốc trạng thái: Pluto hiện dùng mã băm ứng dụng riêng,
+// còn geth dùng mã gốc cây Merkle Patricia của Ethereum.
 const differentialTestKey = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 
 type differentialWorkload struct {
@@ -113,7 +113,7 @@ func newCounterDifferentialWorkload(t testing.TB) differentialWorkload {
 	}
 	sender := crypto.PubkeyToAddress(key.PublicKey)
 	recipient := common.HexToAddress("0x0000000000000000000000000000000000001234")
-	contract := crypto.CreateAddress(sender, 1) // nonce 0 transfers; nonce 1 creates Counter.
+	contract := crypto.CreateAddress(sender, 1) // Nonce 0 chuyển tiền; nonce 1 tạo Counter.
 
 	bytecode, err := os.ReadFile(filepath.Join("..", "..", "contracts", "Counter.bin"))
 	if err != nil {
@@ -127,7 +127,7 @@ func newCounterDifferentialWorkload(t testing.TB) differentialWorkload {
 		t.Fatal("Counter creation bytecode is empty")
 	}
 
-	increment := common.FromHex("0xd09de08a") // increment()
+	increment := common.FromHex("0xd09de08a") // Hàm increment().
 	addSeven := append(common.FromHex("0x1003e2d2"), common.LeftPadBytes(big.NewInt(7).Bytes(), 32)...)
 
 	transactions := []*types.Transaction{
@@ -136,7 +136,7 @@ func newCounterDifferentialWorkload(t testing.TB) differentialWorkload {
 		signedTx(t, differentialTestKey, 2, 100_000, &contract, new(big.Int), increment),
 		signedTx(t, differentialTestKey, 3, 100_000, &contract, new(big.Int), increment),
 		signedTx(t, differentialTestKey, 4, 100_000, &contract, new(big.Int), addSeven),
-		signedTx(t, differentialTestKey, 5, 100_000, &contract, new(big.Int), common.FromHex("0xa9cc4718")), // fail()
+		signedTx(t, differentialTestKey, 5, 100_000, &contract, new(big.Int), common.FromHex("0xa9cc4718")), // Hàm fail().
 	}
 
 	getHash := func(height uint64) common.Hash {
@@ -162,8 +162,8 @@ func newCounterDifferentialWorkload(t testing.TB) differentialWorkload {
 	}
 }
 
-// Accepting evm.Executor lets the same workload run against a future parallel
-// executor without changing the workload or comparison code.
+// Nhận evm.Executor để có thể chạy cùng workload trên bộ thực thi song song
+// trong tương lai mà không cần sửa dữ liệu tải hoặc mã so sánh.
 func runPlutoDifferentialWorkload(t testing.TB, executor evm.Executor, workload differentialWorkload) differentialObservation {
 	t.Helper()
 	db, err := store.NewPebbleDB("differential", t.TempDir())
@@ -393,9 +393,9 @@ type observedRootAccount struct {
 	Storage []observedRootSlot
 }
 
-// observedStateRoot gives Pluto and geth a shared root domain over every
-// account and storage slot declared by the workload. Pluto's native app root is
-// still compared separately among Pluto executors because it is not an MPT.
+// observedStateRoot tạo mã gốc chung cho Pluto và geth trên mọi tài khoản và ô
+// lưu trữ mà workload khai báo. Mã gốc ứng dụng riêng của Pluto vẫn được so sánh
+// giữa các bộ thực thi Pluto vì nó không phải cây Merkle Patricia.
 func observedStateRoot(accounts map[common.Address]differentialAccount) common.Hash {
 	addresses := make([]common.Address, 0, len(accounts))
 	for address := range accounts {
@@ -509,10 +509,10 @@ type namedExecutor struct {
 	ev   evm.Executor
 }
 
-// compareAllExecutors keeps the workload independent of concrete engines. A
-// future parallel executor is added by passing another namedExecutor here;
-// every Pluto result is checked against geth and against the first Pluto
-// executor, including Pluto's custom state root.
+// compareAllExecutors giữ workload độc lập với từng bộ máy cụ thể. Có thể thêm
+// bộ thực thi song song trong tương lai bằng cách truyền namedExecutor vào đây.
+// Mọi kết quả Pluto được so với geth và bộ thực thi Pluto đầu tiên, gồm cả mã
+// gốc trạng thái riêng của Pluto.
 func compareAllExecutors(t testing.TB, workload differentialWorkload, executors ...namedExecutor) map[string]differentialObservation {
 	t.Helper()
 	if len(executors) == 0 {
@@ -672,10 +672,10 @@ func TestDifferentialHarnessParallelFullyReplaysAfterValidationFailure(t *testin
 		t.Fatalf("transfer in contract workload classified as S count = %v, want 1", parallel.metrics["tx_class_s"])
 	}
 
-	// Every transaction after the first speculatively reads the sender nonce
-	// before its predecessor is accepted. Ordered validation therefore aborts
-	// those stale incarnation-1 attempts and the current implementation starts
-	// each transaction again from its entry point as incarnation 2.
+	// Mọi giao dịch sau giao dịch đầu đều đọc trước nonce người gửi trước khi giao
+	// dịch đứng trước được chấp nhận. Vì vậy xác thực theo thứ tự hủy các lần chạy
+	// incarnation 1 đã cũ; cách cài đặt hiện tại chạy lại từng giao dịch từ đầu ở
+	// incarnation 2.
 	wantRetries := float64(len(workload.transactions) - 1)
 	if got := parallel.metrics["retry_total"]; got != wantRetries {
 		t.Fatalf("parallel retry_total = %v, want %v full transaction replays", got, wantRetries)
@@ -692,8 +692,8 @@ func TestDifferentialHarnessParallelFullyReplaysAfterValidationFailure(t *testin
 func TestDifferentialHarnessParallelStaticTransferFailuresMatch(t *testing.T) {
 	pool := newAccountPool(t, 0x534641494c, 4)
 	transactions := []*types.Transaction{
-		signedTx(t, pool[0].keyHex, 0, 21_000, &pool[1].address, big.NewInt(2), nil), // insufficient balance
-		signedTx(t, pool[2].keyHex, 1, 21_000, &pool[3].address, big.NewInt(1), nil), // nonce gap
+		signedTx(t, pool[0].keyHex, 0, 21_000, &pool[1].address, big.NewInt(2), nil), // Không đủ số dư.
+		signedTx(t, pool[2].keyHex, 1, 21_000, &pool[3].address, big.NewInt(1), nil), // Nonce bị nhảy.
 	}
 	balances := map[common.Address]*big.Int{
 		pool[0].address: big.NewInt(1),

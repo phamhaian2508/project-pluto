@@ -119,7 +119,7 @@ func TestExecutionCheckpointRestoresInterpreterAndTransactionState(t *testing.T)
 		t.Fatalf("RAM checkpoint changed base/DB-backed state: nonce=%d", got)
 	}
 
-	// The restored journal and snapshot must remain usable.
+	// Nhật ký và ảnh chụp sau khi khôi phục vẫn phải dùng được.
 	state.SetState(addr, slot, common.HexToHash("0xee"))
 	state.RevertToSnapshot(0)
 	if got := state.GetState(addr, slot); got != common.HexToHash("0xaa") {

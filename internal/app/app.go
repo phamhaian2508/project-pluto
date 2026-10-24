@@ -26,11 +26,11 @@ const (
 	maxTransactionSize        = 128 * 1024
 )
 
-// Chain ID
+// Mã định danh chuỗi
 var chainID = big.NewInt(plutoconfig.EVMChainID)
 
-// newChainConfig: bật mọi EIP đến Shanghai từ block 0.
-// Chưa bật Cancun vì SelfDestruct (EIP-6780) trong state chưa làm đúng.
+// newChainConfig bật mọi EIP đến Shanghai từ khối 0.
+// Chưa bật Cancun vì trạng thái tự hủy (EIP-6780) chưa được cài đặt đúng.
 func newChainConfig() *params.ChainConfig {
 	zero := big.NewInt(0)
 	shanghai := uint64(0)
@@ -80,10 +80,10 @@ type GenesisState struct {
 }
 
 type GenesisAccount struct {
-	Balance string `json:"balance"` // Dùng string cho BigInt
+	Balance string `json:"balance"` // Dùng chuỗi để biểu diễn số nguyên lớn.
 }
 
-// Chạy một lần khi block height = 0
+// Chạy một lần khi chiều cao khối bằng 0.
 func (app *App) InitChain(ctx context.Context, req *abci.InitChainRequest) (*abci.InitChainResponse, error) {
 	app.logger.Info("Initializing chain with genesis data...")
 
@@ -123,7 +123,7 @@ func (app *App) InitChain(ctx context.Context, req *abci.InitChainRequest) (*abc
 		return nil, fmt.Errorf("failed to commit genesis state: %w", err)
 	}
 
-	// Tính AppHash cho genesis
+	// Tính AppHash cho khối khởi nguyên.
 	app.appHash = stateDB.ComputeAppHash()
 
 	return &abci.InitChainResponse{
@@ -137,11 +137,11 @@ func NewApp(dbPath string, logger *slog.Logger) (*App, error) {
 		return nil, fmt.Errorf("failed to create PebbleDB: %w", err)
 	}
 
-	// Khôi phục state khi restart
+	// Khôi phục trạng thái khi khởi động lại.
 	currentHeight := int64(0)
 	appHash := []byte{}
 
-	// Đọc height
+	// Đọc chiều cao khối.
 	heightBytes, err := db.Get([]byte("height"))
 	if err == nil && len(heightBytes) > 0 {
 		if h, err := strconv.ParseInt(string(heightBytes), 10, 64); err == nil {
@@ -150,7 +150,7 @@ func NewApp(dbPath string, logger *slog.Logger) (*App, error) {
 		}
 	}
 
-	// Đọc appHash
+	// Đọc AppHash.
 	savedHash, err := db.Get([]byte("appHash"))
 	if err == nil && len(savedHash) > 0 {
 		appHash = savedHash
@@ -168,8 +168,8 @@ func NewApp(dbPath string, logger *slog.Logger) (*App, error) {
 	}, nil
 }
 
-// ConfigureExecutor selects the deterministic block executor. Sequential is
-// the default; parallel remains opt-in while its supported workload is narrow.
+// ConfigureExecutor chọn bộ thực thi khối có tính tất định. Mặc định là tuần tự;
+// chế độ song song chỉ được bật khi cần vì phạm vi tải được hỗ trợ còn hẹp.
 func (app *App) ConfigureExecutor(mode string, workers int) error {
 	if mode != "sequential" && mode != "parallel" {
 		return fmt.Errorf("unknown executor %q (want sequential or parallel)", mode)
@@ -182,8 +182,8 @@ func (app *App) ConfigureExecutor(mode string, workers int) error {
 	return nil
 }
 
-// Info: trả về state hiện tại khi restart node
-// Handshake
+// Info trả về trạng thái hiện tại khi nút khởi động lại.
+// Đây là bước bắt tay giữa ứng dụng và CometBFT.
 func (app *App) Info(ctx context.Context, req *abci.InfoRequest) (*abci.InfoResponse, error) {
 	app.logger.Info("CometBFT Handshake received",
 		"comet_version", req.Version,
@@ -198,14 +198,14 @@ func (app *App) Info(ctx context.Context, req *abci.InfoRequest) (*abci.InfoResp
 	}, nil
 }
 
-// Gọi khi bắt đầu tạo block mới (chọn lọc/sắp xếp tx)
+// Được gọi khi bắt đầu tạo khối mới để chọn và sắp xếp giao dịch.
 func (app *App) PrepareProposal(_ context.Context, req *abci.PrepareProposalRequest) (*abci.PrepareProposalResponse, error) {
 	return &abci.PrepareProposalResponse{
 		Txs: req.Txs,
 	}, nil
 }
 
-// Validator kiểm tra block trước khi vote precommit
+// Validator kiểm tra khối trước khi bỏ phiếu precommit.
 func (app *App) ProcessProposal(_ context.Context, req *abci.ProcessProposalRequest) (*abci.ProcessProposalResponse, error) {
 	for _, tx := range req.Txs {
 		if len(tx) == 0 {
@@ -221,7 +221,7 @@ func (app *App) ProcessProposal(_ context.Context, req *abci.ProcessProposalRequ
 	}, nil
 }
 
-// FinalizeBlock executes block transactions through the configured executor.
+// FinalizeBlock thực thi các giao dịch trong khối bằng bộ thực thi đã cấu hình.
 func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockRequest) (*abci.FinalizeBlockResponse, error) {
 	if app.pendingBlock != nil {
 		return nil, fmt.Errorf("cannot finalize height %d: height %d is not committed", req.Height, app.pendingBlock.height)
@@ -229,8 +229,8 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 
 	txResults := make([]*abci.ExecTxResult, len(req.Txs))
 
-	// StateDB mới cho block. Transactions are decoded here so malformed input
-	// stays attached to its original index in the executor result.
+	// Tạo StateDB mới cho khối. Giao dịch được giải mã tại đây để dữ liệu đầu vào
+	// sai định dạng vẫn gắn với đúng chỉ số trong kết quả của bộ thực thi.
 	stateDB := evm.NewPebbleStateDB(app.db)
 	chainConfig := newChainConfig()
 	transactions := make([]*types.Transaction, len(req.Txs))
@@ -293,7 +293,7 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		return nil, fmt.Errorf("stage ethereum block metadata: %w", err)
 	}
 
-	// Stage state and metadata. Commit persists all of them atomically.
+	// Chuẩn bị trạng thái và siêu dữ liệu. Commit lưu tất cả trong cùng một thao tác.
 	pendingAppHash := append([]byte(nil), blockResult.StateRoot[:]...)
 	app.pendingBlock = &pendingBlock{
 		height:    req.Height,
@@ -310,7 +310,7 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 
 func blockHashKey(height uint64) []byte { return []byte(fmt.Sprintf("block-hash-%020d", height)) }
 
-// Commit persists the finalized block state and metadata in one atomic batch.
+// Commit lưu trạng thái khối đã hoàn tất cùng siêu dữ liệu trong một lô nguyên tử.
 func (app *App) Commit(ctx context.Context, req *abci.CommitRequest) (*abci.CommitResponse, error) {
 	if app.pendingBlock == nil {
 		return &abci.CommitResponse{}, nil
@@ -357,7 +357,7 @@ func (app *App) Commit(ctx context.Context, req *abci.CommitRequest) (*abci.Comm
 	return &abci.CommitResponse{}, nil
 }
 
-// CheckTx kiểm tra tx trước khi vào Mempool
+// CheckTx kiểm tra giao dịch trước khi đưa vào vùng chờ giao dịch.
 func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.CheckTxResponse, error) {
 	if len(req.Tx) > maxTransactionSize {
 		return &abci.CheckTxResponse{
@@ -366,7 +366,7 @@ func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.Ch
 		}, nil
 	}
 
-	// Decode tx
+	// Giải mã giao dịch.
 	ethTx, err := app.txProcessor.DecodeTx(req.Tx)
 	if err != nil {
 		return &abci.CheckTxResponse{
@@ -382,7 +382,7 @@ func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.Ch
 		}, nil
 	}
 
-	// Verify signature
+	// Xác minh chữ ký.
 	sender, err := app.txProcessor.RecoverSender(ethTx)
 	if err != nil {
 		return &abci.CheckTxResponse{
@@ -398,8 +398,8 @@ func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.Ch
 		}, nil
 	}
 
-	// The chain enables Homestead, Istanbul (EIP-2028), and Shanghai
-	// (EIP-3860) from genesis.
+	// Chuỗi bật Homestead, Istanbul (EIP-2028) và Shanghai (EIP-3860)
+	// ngay từ khối khởi nguyên.
 	intrinsicGas, err := core.IntrinsicGas(
 		ethTx.Data(),
 		ethTx.AccessList(),

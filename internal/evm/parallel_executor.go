@@ -17,15 +17,15 @@ import (
 	"github.com/holiman/uint256"
 )
 
-// ExecutionClass is the deterministic P/O/S routing decision. Parametric is
-// reserved for certified P artifacts; the current conservative analyzer does
-// not produce such artifacts yet.
+// ExecutionClass là quyết định phân luồng P/O/S có tính tất định. P chỉ dành
+// cho mô tả thực thi đã được chứng nhận; bộ phân tích thận trọng hiện chưa tạo
+// ra loại mô tả này.
 type ExecutionClass uint8
 
 const (
-	ExecutionStatic     ExecutionClass = iota // S: statically bounded access set
-	ExecutionParametric                       // P: certified parameterized artifact
-	ExecutionOpaque                           // O: ordinary EVM execution in order
+	ExecutionStatic     ExecutionClass = iota // S: tập truy cập được giới hạn tĩnh.
+	ExecutionParametric                       // P: mô tả thực thi tham số hóa đã chứng nhận.
+	ExecutionOpaque                           // O: thực thi EVM thông thường theo thứ tự.
 )
 
 func (c ExecutionClass) String() string {
@@ -39,8 +39,8 @@ func (c ExecutionClass) String() string {
 	}
 }
 
-// MVKey identifies a versioned state component. The first implementation's
-// static transfer analyzer tracks account balance and nonce keys only.
+// MVKey định danh một thành phần trạng thái có phiên bản. Bộ phân tích chuyển
+// khoản tĩnh ở phiên bản đầu chỉ theo dõi khóa số dư và nonce của tài khoản.
 type MVKey struct {
 	Address common.Address
 	Kind    MVKeyKind
@@ -54,9 +54,9 @@ const (
 	MVNonce
 	MVCode
 	MVStorage
-	// MVAccount is a conservative account-wide dependency. StateDB operations
-	// that can create, delete, or change account emptiness also record this key
-	// so those effects cannot be missed by optimistic validation.
+	// MVAccount là quan hệ phụ thuộc thận trọng trên toàn tài khoản. Các thao tác
+	// StateDB có thể tạo, xóa hoặc làm tài khoản rỗng cũng ghi nhận khóa này để
+	// bước xác thực lạc quan không bỏ sót ảnh hưởng.
 	MVAccount
 	MVStorageRoot
 )
@@ -75,8 +75,8 @@ type MVVersionRecord struct {
 	Deleted     bool
 }
 
-// The current S analyzer supports transfers, which touch at most three keys.
-// Keeping these small sets inline avoids per-transaction maps and slices.
+// Bộ phân tích S hiện hỗ trợ chuyển khoản, mỗi giao dịch chạm tối đa ba khóa.
+// Lưu các tập nhỏ này trực tiếp giúp tránh tạo map và slice cho từng giao dịch.
 const maxStaticTransferKeys = 3
 
 type MVKeySet struct {
@@ -98,8 +98,8 @@ type MVVersionSnapshot struct {
 	len      uint8
 }
 
-// MVMemory is the accepted-version table. It is sharded so parallel
-// validation and ordered resolver updates do not contend on one global lock.
+// MVMemory là bảng lưu các phiên bản đã chấp nhận. Bảng được chia thành nhiều
+// phần để việc xác thực song song và cập nhật theo thứ tự không tranh một khóa chung.
 type MVMemory struct{ shards [32]versionShard }
 
 func NewMVMemory() *MVMemory {
@@ -111,8 +111,8 @@ func NewMVMemory() *MVMemory {
 	return m
 }
 
-// ReadBefore returns the latest accepted version produced by a transaction
-// earlier than txIndex. The value is copied so callers cannot mutate MVMemory.
+// ReadBefore trả về phiên bản đã chấp nhận mới nhất do giao dịch trước txIndex
+// tạo ra. Giá trị được sao chép để bên gọi không thể sửa MVMemory.
 func (m *MVMemory) ReadBefore(key MVKey, txIndex int) (MVVersionRecord, bool) {
 	shard := m.shard(key)
 	shard.RLock()
@@ -182,9 +182,9 @@ func (m *MVMemory) CommitSet(writes MVKeySet) {
 	}
 }
 
-// Snapshot, Validate, and Commit retain the general slice-based API for tests
-// and future analyzers with larger access sets. The transfer hot path uses the
-// fixed-size variants above to avoid per-transaction allocations.
+// Snapshot, Validate và Commit giữ giao diện dùng slice tổng quát cho kiểm thử
+// và các bộ phân tích tương lai có tập truy cập lớn hơn. Đường chuyển khoản
+// thường dùng các phiên bản kích thước cố định ở trên để tránh cấp phát lặp lại.
 func (m *MVMemory) Snapshot(keys []MVKey) map[MVKey]uint64 {
 	versions := make(map[MVKey]uint64, len(keys))
 	for _, key := range keys {
@@ -211,10 +211,10 @@ func (m *MVMemory) Commit(writes []MVKey) {
 	}
 }
 
-// TxState is a private, journaled state overlay forked from a block state.
-// The embedded PebbleStateDB keeps the exact existing geth vm.StateDB
-// semantics; it reads through to immutable Pebble data and keeps all mutation
-// in per-transaction maps until the ordered resolver accepts its write set.
+// TxState là lớp phủ trạng thái riêng có nhật ký, được tách từ trạng thái khối.
+// PebbleStateDB nhúng bên trong giữ nguyên ngữ nghĩa vm.StateDB của geth; nó
+// đọc từ dữ liệu Pebble bất biến và giữ mọi thay đổi trong map riêng đến khi bộ
+// phân giải có thứ tự chấp nhận tập ghi.
 type TxState struct {
 	*PebbleStateDB
 	TxIndex     int
@@ -267,10 +267,10 @@ func (s *TxState) recordRead(key MVKey) {
 
 func (s *TxState) recordWrite(key MVKey) {
 	s.addWriteKey(key)
-	// A storage-slot update does not change account existence, nonce, balance,
-	// or code. Versioning MVAccount for every SSTORE creates a false conflict
-	// with the already-validated contract/code prefix and prevents a safe
-	// checkpoint immediately before SLOAD from being reused.
+	// Cập nhật một ô lưu trữ không làm thay đổi sự tồn tại, nonce, số dư hoặc mã
+	// của tài khoản. Tăng phiên bản MVAccount cho mọi SSTORE sẽ tạo xung đột giả
+	// với phần hợp đồng/mã đã xác thực và ngăn tái sử dụng checkpoint an toàn ngay
+	// trước SLOAD.
 	if key.Kind != MVStorage && key.Kind != MVStorageRoot {
 		s.addWriteKey(MVKey{Address: key.Address, Kind: MVAccount})
 	}
@@ -317,8 +317,8 @@ func stateVersionedWrites(state *PebbleStateDB, keys []MVKey) map[MVKey][]byte {
 	return values
 }
 
-// The wrapper records persistent state dependencies while leaving transient
-// EVM state (refunds, access lists and transient storage) transaction-local.
+// Lớp bọc ghi nhận các quan hệ phụ thuộc trạng thái bền vững, còn trạng thái EVM
+// tạm thời (hoàn gas, danh sách truy cập và vùng lưu trữ tạm) vẫn thuộc riêng giao dịch.
 func (s *TxState) CreateAccount(addr common.Address) {
 	s.recordWrite(MVKey{Address: addr, Kind: MVAccount})
 	s.PebbleStateDB.CreateAccount(addr)
@@ -426,10 +426,10 @@ func (s *TxState) Empty(addr common.Address) bool {
 	return s.PebbleStateDB.Empty(addr)
 }
 
-// ParallelExecutor speculates on isolated EVM state overlays and resolves
-// results in canonical transaction order. A narrower direct S path handles
-// blocks made entirely of certified zero-fee EOA transfers. P artifacts remain
-// disabled until certified artifact generation/evaluation is implemented.
+// ParallelExecutor thực thi đầu cơ trên các lớp phủ EVM cô lập rồi phân giải
+// kết quả theo thứ tự giao dịch chuẩn. Đường S trực tiếp hẹp hơn xử lý các khối
+// chỉ gồm chuyển khoản EOA không phí đã được chứng nhận. P vẫn tắt cho đến khi
+// có thể tạo và đánh giá mô tả thực thi đã chứng nhận.
 type ParallelExecutor struct {
 	ChainConfig *params.ChainConfig
 	ChainID     *big.Int
@@ -447,8 +447,8 @@ func NewParallelExecutor(config *params.ChainConfig, chainID *big.Int, workers i
 	}
 }
 
-// ConfigureCheckpoints enables deterministic capture/recovery for the selected
-// policy. The default constructor continues to use P0.
+// ConfigureCheckpoints bật chụp/khôi phục có tính tất định theo chính sách đã
+// chọn. Hàm khởi tạo mặc định vẫn dùng P0.
 func (e *ParallelExecutor) ConfigureCheckpoints(config CheckpointConfig) error {
 	if err := config.Validate(); err != nil {
 		return err
@@ -457,8 +457,8 @@ func (e *ParallelExecutor) ConfigureCheckpoints(config CheckpointConfig) error {
 	return nil
 }
 
-// NewCheckpointSelector creates deterministic, execution-local policy state.
-// It does not attach recovery or mutate EVM state.
+// NewCheckpointSelector tạo trạng thái chính sách tất định, chỉ dùng trong một
+// lần thực thi. Hàm không gắn cơ chế khôi phục và không sửa trạng thái EVM.
 func (e *ParallelExecutor) NewCheckpointSelector() (*CheckpointSelector, error) {
 	if e == nil {
 		return nil, fmt.Errorf("checkpoint selector requires parallel executor")
@@ -517,18 +517,18 @@ func (e *ParallelExecutor) executeStaticBlock(base StateReader, env BlockEnv, tx
 
 	for i := 0; i < len(txs); {
 		access := accesses[i]
-		// Form a deterministic, contiguous, conflict-free S wave. The static
-		// access list contains sender/recipient balances and sender nonce.
+		// Tạo một đợt S liên tiếp, tất định và không xung đột. Danh sách truy cập
+		// tĩnh gồm số dư người gửi/người nhận và nonce người gửi.
 		wave := []int{i}
 		waveAccesses := []staticTransfer{access}
 		used := map[common.Address]bool{access.sender: true, access.recipient: true}
 		reservedGas := txs[i].Gas()
-		// Transfers are cheap to evaluate. Making each wave only as large as
-		// the worker count caused a barrier after every handful of transactions,
-		// so amortize scheduling and validation across several tasks per worker.
-		// The address conflict check remains the safety boundary for a wave.
+		// Chuyển khoản có chi phí đánh giá thấp. Nếu mỗi đợt chỉ lớn bằng số worker
+		// thì cứ vài giao dịch lại phải chờ đồng bộ; vì vậy gom nhiều tác vụ cho
+		// mỗi worker để giảm chi phí điều phối và xác thực. Kiểm tra xung đột địa
+		// chỉ vẫn là ranh giới an toàn của mỗi đợt.
 		waveLimit := workers * 128
-		if waveLimit < workers { // protect against integer overflow
+		if waveLimit < workers { // Ngăn phép nhân gây tràn số.
 			waveLimit = workers
 		}
 		for j := i + 1; j < len(txs) && len(wave) < waveLimit; j++ {
@@ -592,8 +592,8 @@ func (e *ParallelExecutor) executeStaticBlock(base StateReader, env BlockEnv, tx
 			wg.Add(1)
 			jobs <- func() {
 				defer wg.Done()
-				// One scheduled job evaluates a batch, reducing channel and
-				// closure overhead for the deliberately small S transfer operation.
+				// Mỗi tác vụ được xếp lịch đánh giá một nhóm giao dịch, giảm chi phí
+				// channel và tạo hàm đóng cho thao tác chuyển khoản S vốn rất nhỏ.
 				for n := worker; n < len(attempts); n += workerCount {
 					txIndex := attempts[n].index
 					attempts[n].result, attempts[n].value, attempts[n].valid = evaluateStaticTransfer(txs[txIndex], attempts[n].sender, attempts[n].recipient)
@@ -606,8 +606,8 @@ func (e *ParallelExecutor) executeStaticBlock(base StateReader, env BlockEnv, tx
 			parallelCount += float64(len(wave))
 		}
 
-		// Validate and resolve strictly by original TxIndex, independent of
-		// worker completion order.
+		// Xác thực và phân giải nghiêm ngặt theo TxIndex ban đầu, không phụ thuộc
+		// thứ tự hoàn tất của worker.
 		for n := range attempts {
 			attempt := &attempts[n]
 			validateStart := time.Now()
@@ -737,10 +737,10 @@ func evaluateStaticTransfer(tx *types.Transaction, sender, recipient *Account) (
 	return result, value, true
 }
 
-// applyStaticTransfer resolves a validated S artifact with the same protocol
-// effects as geth's 21,000-gas EOA call. This fast path is only reachable for
-// legacy, zero-fee, empty-calldata transfers to non-contract, non-precompile
-// addresses; all other transactions use ApplyMessage.
+// applyStaticTransfer phân giải một giao dịch S đã xác thực với ảnh hưởng giao
+// thức giống lời gọi EOA tốn 21.000 gas của geth. Đường nhanh này chỉ áp dụng
+// cho giao dịch legacy không phí, calldata rỗng, gửi đến địa chỉ không phải hợp
+// đồng hoặc precompile; các giao dịch khác đều dùng ApplyMessage.
 func applyStaticTransfer(state *PebbleStateDB, tx *types.Transaction, access staticTransfer, value *uint256.Int, coinbase common.Address) error {
 	if value == nil {
 		return fmt.Errorf("static transfer has no validated value")

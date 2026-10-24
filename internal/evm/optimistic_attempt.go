@@ -16,9 +16,9 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
-// optimisticAttempt is an isolated execution of one transaction. It contains
-// no writes to the block's canonical StateDB until the ordered resolver accepts
-// its delta.
+// optimisticAttempt là một lần thực thi cô lập của một giao dịch. Nó không ghi
+// vào StateDB chuẩn của khối cho đến khi bộ phân giải có thứ tự chấp nhận phần
+// thay đổi.
 type optimisticAttempt struct {
 	result      TxResult
 	state       *TxState
@@ -66,9 +66,9 @@ const (
 	attemptAborted
 )
 
-// ExecuteBlock runs independent transaction attempts concurrently and accepts
-// their state effects in canonical transaction order. A stale attempt is
-// discarded and rerun against the latest accepted state before it can commit.
+// ExecuteBlock chạy đồng thời các lần thực thi giao dịch độc lập và chấp nhận
+// ảnh hưởng trạng thái theo thứ tự giao dịch chuẩn. Lần chạy dùng dữ liệu cũ bị
+// loại bỏ và chạy lại trên trạng thái mới nhất trước khi được chốt.
 func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*types.Transaction) (*BlockResult, error) {
 	totalStarted := time.Now()
 	stateDB, ok := base.(*PebbleStateDB)
@@ -84,9 +84,9 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 	if env.BaseFee == nil {
 		env.BaseFee = new(big.Int)
 	}
-	// Keep the certified, allocation-light transfer path for blocks consisting
-	// entirely of conflict-free S candidates. General EVM transactions use the
-	// isolated optimistic attempts below.
+	// Giữ đường xử lý chuyển khoản đã được chứng nhận, ít cấp phát cho các khối
+	// chỉ gồm giao dịch S không xung đột. Giao dịch EVM thông thường dùng các lần
+	// chạy lạc quan cô lập ở bên dưới.
 	analyzeStart := time.Now()
 	allStatic := len(txs) > 0
 	staticAccesses := make([]staticTransfer, len(txs))
@@ -122,10 +122,10 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 	analyzeNS, executeNS, validateNS, resolveNS := preAnalyzeNS, int64(0), int64(0), int64(0)
 	var aborts, retries, parallelTxs, staticTxs, opaqueTxs float64
 
-	// Bounded waves limit speculative memory while keeping enough independent
-	// transactions in flight to amortize worker scheduling overhead.
+	// Chia thành các đợt có giới hạn để giảm bộ nhớ đầu cơ, đồng thời giữ đủ giao
+	// dịch độc lập đang chạy nhằm bù chi phí điều phối worker.
 	waveSize := workers * 8
-	if waveSize < workers || waveSize < 1 { // multiplication overflow guard
+	if waveSize < workers || waveSize < 1 { // Ngăn phép nhân gây tràn số.
 		waveSize = workers
 	}
 	for start := 0; start < len(txs); start += waveSize {
@@ -160,8 +160,8 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 				for item := range jobs {
 					attempt, err := executeOptimisticAttemptConfigured(stateDB, versions, e.ChainConfig, e.ChainID, env, wave[item.index], start+item.index, 1, env.GasLimit, e.Checkpoints, waveHotKeys, nil)
 					if err != nil {
-						// Store the error as an invalid result; the resolver reports it
-						// deterministically in transaction order.
+						// Lưu lỗi thành kết quả giao dịch không hợp lệ; bộ phân giải sẽ báo
+						// lỗi theo cách tất định và theo thứ tự giao dịch.
 						attempt = &optimisticAttempt{result: TxResult{Index: start + item.index, Invalid: true, ErrMsg: err.Error()}}
 					}
 					attempts[item.index] = attempt
@@ -179,8 +179,8 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 			parallelTxs += float64(len(wave))
 		}
 
-		// The resolver is the only writer to the canonical StateDB and always
-		// advances in original block order, regardless of worker completion.
+		// Bộ phân giải là nơi duy nhất ghi vào StateDB chuẩn và luôn xử lý theo
+		// thứ tự ban đầu trong khối, bất kể worker hoàn tất theo thứ tự nào.
 		for i, speculative := range attempts {
 			tx := wave[i]
 			if speculative == nil {

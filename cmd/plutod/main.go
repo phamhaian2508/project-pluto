@@ -41,7 +41,7 @@ func init() {
 	flag.IntVar(&workerCount, "workers", 4, "Parallel executor worker count")
 }
 
-// Pebble DB provider
+// Bộ cung cấp cơ sở dữ liệu Pebble.
 func PebbleDBProvider(ctx *cfg.DBContext) (dbm.DB, error) {
 	return store.NewPebbleDB(ctx.ID, ctx.Config.DBDir())
 }
@@ -52,7 +52,7 @@ func main() {
 		homeDir = os.ExpandEnv("$HOME/.plutod")
 	}
 
-	// Setup config
+	// Thiết lập cấu hình.
 	config := cfg.DefaultConfig()
 	config.SetRoot(homeDir)
 
@@ -63,20 +63,20 @@ func main() {
 		}
 	}
 
-	// Setup Logger (CometBFT)
+	// Thiết lập bộ ghi nhật ký CometBFT.
 	logger := cmtlog.NewTMLogger(cmtlog.NewSyncWriter(os.Stdout))
 	logger = logger.With("module", "main")
 
-	// Setup Logger cho App (Slog)
+	// Thiết lập bộ ghi nhật ký cho ứng dụng (Slog).
 	appLogger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	// Load Node & Validator Key
+	// Tải khóa nút và khóa validator.
 	nodeKey, err := cmtp2p.LoadOrGenNodeKey(config.NodeKeyFile())
 	if err != nil {
 		panic(fmt.Errorf("failed to load node key: %w", err))
 	}
 
-	// Load/Gen validator key (CometBFT v1.0.0)
+	// Tải hoặc tạo khóa validator (CometBFT v1.0.0).
 	pv, err := cmtprivval.LoadOrGenFilePV(
 		config.PrivValidatorKeyFile(),
 		config.PrivValidatorStateFile(),
@@ -100,7 +100,7 @@ func main() {
 	}
 	defer myApp.Close()
 
-	// Context cho node
+	// Tạo ngữ cảnh cho nút.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -121,7 +121,7 @@ func main() {
 		panic(fmt.Errorf("failed to create node: %v", err))
 	}
 
-	// Start Node
+	// Khởi chạy nút.
 	if err := node.Start(); err != nil {
 		panic(fmt.Errorf("failed to start node: %v", err))
 	}
@@ -147,7 +147,7 @@ func main() {
 		logger.Error("Failed to stop Ethereum JSON-RPC", "err", err)
 	}
 	shutdownCancel()
-	cancel() // Dừng node
+	cancel() // Dừng nút.
 	node.Stop()
 	node.Wait()
 }

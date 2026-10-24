@@ -1,10 +1,10 @@
-// plutotx: công cụ dòng lệnh nhỏ để thử chain Pluto.
+// plutotx: công cụ dòng lệnh nhỏ để thử chuỗi khối Pluto.
 //
 //	go run ./cmd/plutotx balance 0xĐịaChỉ
-//	go run ./cmd/plutotx send -key <privkey-hex> -to 0xĐịaChỉ -eth 10
-//	go run ./cmd/plutotx deploy -key <privkey-hex> -bytecode contracts/Counter.bin
-//	go run ./cmd/plutotx call -key <privkey-hex> -to 0xContract -data d09de08a
-//	go run ./cmd/plutotx storage 0xContract 0
+//	go run ./cmd/plutotx send -key <khóa-riêng-dạng-hex> -to 0xĐịaChỉ -eth 10
+//	go run ./cmd/plutotx deploy -key <khóa-riêng-dạng-hex> -bytecode contracts/Counter.bin
+//	go run ./cmd/plutotx call -key <khóa-riêng-dạng-hex> -to 0xHợpĐồng -data d09de08a
+//	go run ./cmd/plutotx storage 0xHợpĐồng 0
 package main
 
 import (
@@ -41,7 +41,7 @@ type rpcResponse struct {
 	} `json:"error"`
 }
 
-// rpcGet gọi RPC dạng URI của CometBFT
+// rpcGet gọi RPC dạng URI của CometBFT.
 func rpcGet(method string, params url.Values) (json.RawMessage, error) {
 	resp, err := http.Get(rpcURL + "/" + method + "?" + params.Encode())
 	if err != nil {
@@ -64,7 +64,7 @@ func rpcGet(method string, params url.Values) (json.RawMessage, error) {
 	return r.Result, nil
 }
 
-// query gọi ABCI Query của app (path: "balance" hoặc "nonce")
+// query gọi ABCI Query của ứng dụng (đường dẫn: "balance" hoặc "nonce").
 func query(path string, data []byte) (string, error) {
 	res, err := rpcGet("abci_query", url.Values{
 		"path": {`"` + path + `"`},
@@ -151,7 +151,7 @@ func cmdSend(args []string) {
 
 	tx := types.NewTx(&types.LegacyTx{
 		Nonce:    nonce,
-		GasPrice: big.NewInt(0), // Phase 1: gas miễn phí
+		GasPrice: big.NewInt(0), // Giai đoạn 1: giao dịch không mất phí gas.
 		Gas:      21000,
 		To:       &to,
 		Value:    value,

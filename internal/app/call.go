@@ -14,7 +14,7 @@ import (
 type CallArgs = evm.CallArgs
 type CallResult = evm.CallResult
 
-// Call executes against the latest committed state and discards all changes.
+// Call thực thi trên trạng thái đã chốt mới nhất rồi loại bỏ mọi thay đổi.
 func (app *App) Call(args CallArgs) (*CallResult, error) {
 	if args.Gas == 0 {
 		args.Gas = blockGasLimit
@@ -25,7 +25,7 @@ func (app *App) Call(args CallArgs) (*CallResult, error) {
 	return app.executeReadOnlyCall(args)
 }
 
-// EstimateGas finds the smallest gas limit for which the call succeeds.
+// EstimateGas tìm giới hạn gas nhỏ nhất để lời gọi thực thi thành công.
 func (app *App) EstimateGas(args CallArgs) (uint64, error) {
 	intrinsic, err := core.IntrinsicGas(args.Data, args.AccessList, nil, args.To == nil, true, true, true)
 	if err != nil {

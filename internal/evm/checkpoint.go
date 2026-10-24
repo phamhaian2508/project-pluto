@@ -8,21 +8,20 @@ import (
 	"github.com/holiman/uint256"
 )
 
-// CheckpointPolicy identifies when the parallel executor captures an in-memory
-// execution checkpoint. Selection uses only opcode positions, state-read
-// events, and ordered conflict marks; wall-clock time is never consulted.
+// CheckpointPolicy xác định thời điểm bộ thực thi song song chụp checkpoint
+// trong bộ nhớ. Việc chọn chỉ dựa trên vị trí opcode, sự kiện đọc trạng thái và
+// dấu xung đột theo thứ tự; không dùng thời gian thực.
 type CheckpointPolicy uint8
 
 const (
-	CheckpointPolicyP0 CheckpointPolicy = iota // never checkpoint
-	CheckpointPolicyP1                         // before every state read
-	CheckpointPolicyP2                         // every configured opcode interval
-	CheckpointPolicyP3                         // before reads of conflict-hot keys
+	CheckpointPolicyP0 CheckpointPolicy = iota // không tạo checkpoint
+	CheckpointPolicyP1                         // trước mỗi lần đọc trạng thái
+	CheckpointPolicyP2                         // sau mỗi chu kỳ opcode đã cấu hình
+	CheckpointPolicyP3                         // trước khi đọc khóa thường gây xung đột
 )
 
-// CheckpointConfig configures deterministic checkpoint selection. Interval is
-// required only by P2 and denotes the number of executed opcodes between
-// checkpoints.
+// CheckpointConfig cấu hình cách chọn checkpoint có tính tất định. Chỉ P2 cần
+// Interval; giá trị này cho biết số opcode thực thi giữa hai checkpoint.
 type CheckpointConfig struct {
 	Policy   CheckpointPolicy
 	Interval uint64
@@ -50,17 +49,16 @@ const (
 	CheckpointBeforeHotRead
 )
 
-// CheckpointDecision identifies a boundary immediately before the event at
-// OpcodePosition. OpcodePosition is the deterministic count of opcodes already
-// executed in the transaction, starting at zero.
+// CheckpointDecision xác định ranh giới ngay trước sự kiện tại OpcodePosition.
+// OpcodePosition là số opcode đã thực thi trong giao dịch, bắt đầu từ 0.
 type CheckpointDecision struct {
 	OpcodePosition uint64
 	Reason         CheckpointReason
 	ReadKey        MVKey
 }
 
-// CheckpointSelector is execution-local. Conflict keys must be marked in
-// canonical validation order, making P3 independent of goroutine scheduling.
+// CheckpointSelector chỉ tồn tại trong một lần thực thi. Các khóa xung đột phải
+// được đánh dấu theo thứ tự xác thực chuẩn để P3 không phụ thuộc lịch chạy goroutine.
 type CheckpointSelector struct {
 	config  CheckpointConfig
 	hotKeys map[MVKey]struct{}
@@ -73,8 +71,8 @@ func newCheckpointSelector(config CheckpointConfig) (*CheckpointSelector, error)
 	return &CheckpointSelector{config: config, hotKeys: make(map[MVKey]struct{})}, nil
 }
 
-// BeforeOpcode selects P2 checkpoints after exactly N, 2N, ... opcodes have
-// executed. Position zero is the initial transaction boundary, not a P2 point.
+// BeforeOpcode chọn checkpoint P2 sau khi đã thực thi đúng N, 2N, ... opcode.
+// Vị trí 0 là ranh giới đầu giao dịch, không phải điểm checkpoint P2.
 func (s *CheckpointSelector) BeforeOpcode(position uint64) (CheckpointDecision, bool) {
 	if s == nil || s.config.Policy != CheckpointPolicyP2 || position == 0 || position%s.config.Interval != 0 {
 		return CheckpointDecision{}, false
@@ -82,8 +80,8 @@ func (s *CheckpointSelector) BeforeOpcode(position uint64) (CheckpointDecision, 
 	return CheckpointDecision{OpcodePosition: position, Reason: CheckpointOpcodeInterval}, true
 }
 
-// BeforeStateRead selects P1 checkpoints for every read and P3 checkpoints
-// only for keys previously marked hot by an ordered validation conflict.
+// BeforeStateRead chọn checkpoint P1 cho mọi lần đọc và P3 chỉ cho khóa từng
+// được đánh dấu thường xung đột trong lần xác thực có thứ tự.
 func (s *CheckpointSelector) BeforeStateRead(position uint64, key MVKey) (CheckpointDecision, bool) {
 	if s == nil {
 		return CheckpointDecision{}, false
@@ -99,16 +97,16 @@ func (s *CheckpointSelector) BeforeStateRead(position uint64, key MVKey) (Checkp
 	return CheckpointDecision{}, false
 }
 
-// MarkReadConflict deterministically promotes a key to hot. The caller must
-// feed conflicts in canonical transaction-validation order.
+// MarkReadConflict đánh dấu một khóa là thường xung đột theo cách tất định. Bên
+// gọi phải cung cấp xung đột theo thứ tự xác thực giao dịch chuẩn.
 func (s *CheckpointSelector) MarkReadConflict(key MVKey) {
 	if s != nil && s.config.Policy == CheckpointPolicyP3 {
 		s.hotKeys[key] = struct{}{}
 	}
 }
 
-// InterpreterState is the geth-fork-neutral state needed to continue between
-// opcodes. The production geth adapter will populate it in a later task.
+// InterpreterState chứa trạng thái không phụ thuộc bản rẽ nhánh geth, cần thiết
+// để tiếp tục giữa các opcode. Bộ kết nối geth của chương trình điền dữ liệu này.
 type InterpreterState struct {
 	PC                uint64
 	Stack             []uint256.Int
@@ -120,8 +118,8 @@ type InterpreterState struct {
 	CallFrames        []CallFrameState
 }
 
-// CallFrameState owns the execution context and mutable machine state of one
-// suspended EVM call frame.
+// CallFrameState sở hữu ngữ cảnh thực thi và trạng thái máy có thể thay đổi của
+// một khung gọi EVM đang tạm dừng.
 type CallFrameState struct {
 	PC          uint64
 	Stack       []uint256.Int
@@ -142,8 +140,8 @@ type CallFrameState struct {
 	SystemCall  bool
 }
 
-// ExecutionCheckpoint is an immutable, RAM-only snapshot. It deliberately has
-// no serialization or database API.
+// ExecutionCheckpoint là ảnh chụp bất biến chỉ lưu trong RAM. Kiểu này không có
+// giao diện tuần tự hóa hoặc cơ sở dữ liệu.
 type ExecutionCheckpoint struct {
 	interpreter InterpreterState
 	state       *PebbleStateDB
@@ -155,8 +153,8 @@ type ExecutionCheckpoint struct {
 	writes      map[MVKey]struct{}
 }
 
-// TakeExecutionCheckpoint manually captures a complete checkpoint. Automatic
-// policies call no such function while P0 is active.
+// TakeExecutionCheckpoint chụp thủ công một checkpoint đầy đủ. Các chính sách
+// tự động không gọi hàm này khi P0 đang hoạt động.
 func TakeExecutionCheckpoint(interpreter *InterpreterState, state *TxState) (*ExecutionCheckpoint, error) {
 	if interpreter == nil || state == nil || state.PebbleStateDB == nil {
 		return nil, errors.New("checkpoint requires interpreter and transaction state")
@@ -173,9 +171,9 @@ func TakeExecutionCheckpoint(interpreter *InterpreterState, state *TxState) (*Ex
 	}, nil
 }
 
-// Restore replaces all interpreter, overlay, access-set, and incarnation state
-// with private copies of the captured values, allowing a checkpoint to be used
-// more than once without sharing mutable memory.
+// Restore thay toàn bộ trạng thái trình thông dịch, lớp phủ, tập truy cập và lần
+// chạy bằng bản sao riêng của dữ liệu đã chụp. Nhờ đó có thể dùng checkpoint
+// nhiều lần mà không chia sẻ vùng nhớ có thể thay đổi.
 func (c *ExecutionCheckpoint) Restore(interpreter *InterpreterState, state *TxState) error {
 	if c == nil || interpreter == nil || state == nil {
 		return errors.New("restore requires checkpoint, interpreter and transaction state")
@@ -191,15 +189,15 @@ func (c *ExecutionCheckpoint) Restore(interpreter *InterpreterState, state *TxSt
 	return nil
 }
 
-// EstimatedMemoryBytes reports the deterministic payload owned by a checkpoint.
-// It intentionally excludes runtime map/slice allocator overhead, which varies
-// between Go versions and would make benchmark comparisons unstable.
+// EstimatedMemoryBytes trả về kích thước dữ liệu xác định mà checkpoint sở hữu.
+// Hàm không tính phần phụ trội cấp phát map/slice khi chạy, vì phần này thay đổi
+// theo phiên bản Go và làm số liệu benchmark kém ổn định.
 func (c *ExecutionCheckpoint) EstimatedMemoryBytes() uint64 {
 	if c == nil {
 		return 0
 	}
 	size := interpreterPayloadBytes(c.interpreter)
-	size += uint64(len(c.readSet)+len(c.writeSet)+len(c.reads)+len(c.writes)) * 53 // address + kind + slot
+	size += uint64(len(c.readSet)+len(c.writeSet)+len(c.reads)+len(c.writes)) * 53 // địa chỉ + loại khóa + ô lưu trữ
 	if c.state == nil {
 		return size
 	}

@@ -11,7 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 )
 
-// BlockEnv contains the deterministic inputs shared by all execution engines.
+// BlockEnv chứa các đầu vào tất định được mọi bộ thực thi dùng chung.
 type BlockEnv struct {
 	Height       int64
 	Time         uint64
@@ -23,7 +23,7 @@ type BlockEnv struct {
 	PreviousRoot []byte
 }
 
-// StateReader is the read-only state surface shared with alternate executors.
+// StateReader là giao diện chỉ đọc trạng thái dùng chung với các bộ thực thi khác.
 type StateReader interface {
 	Account(addr common.Address) (*Account, bool)
 	Storage(addr common.Address, key common.Hash) common.Hash
@@ -54,8 +54,8 @@ type Executor interface {
 	ExecuteBlock(base StateReader, env BlockEnv, txs []*types.Transaction) (*BlockResult, error)
 }
 
-// SequentialExecutor is the reference engine. It applies transactions in
-// order using geth's validation, gas accounting, and EVM transition logic.
+// SequentialExecutor là bộ máy tham chiếu. Nó áp dụng giao dịch theo thứ tự,
+// dùng logic xác thực, tính gas và chuyển trạng thái EVM của geth.
 type SequentialExecutor struct {
 	ChainConfig *params.ChainConfig
 	ChainID     *big.Int
