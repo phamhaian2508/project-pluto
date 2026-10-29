@@ -151,6 +151,42 @@ func TestTxStateRecordsPersistentStateReadsAndWrites(t *testing.T) {
 	}
 }
 
+func TestTxStateVersionedWritesKeepsStorageDeletionTombstone(t *testing.T) {
+	db, err := store.NewPebbleDB("tx-state-storage-tombstone", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	addr := common.HexToAddress("0x1234")
+	slot := common.HexToHash("0x99")
+	base := NewPebbleStateDB(db)
+	base.SetState(addr, slot, common.HexToHash("0x01"))
+	if err := base.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	base = NewPebbleStateDB(db)
+
+	txState := newTxState(base, 1, 1, nil, nil)
+	txState.SetState(addr, slot, common.Hash{})
+	writes := txState.VersionedWrites()
+	key := MVKey{Address: addr, Kind: MVStorage, Slot: slot}
+	value, ok := writes[key]
+	if !ok {
+		t.Fatal("zero storage write was omitted; MVMemory would miss the conflict")
+	}
+	if value != nil {
+		t.Fatalf("zero storage write = %x, want explicit deletion tombstone", value)
+	}
+
+	memory := NewMVMemory()
+	observed := memory.Snapshot([]MVKey{key})
+	memory.CommitTransaction(1, txState.Incarnation, writes)
+	if memory.Validate(observed) {
+		t.Fatal("read version remained valid after storage was cleared")
+	}
+}
+
 func TestOptimisticAttemptExecutesOnIsolatedStateAndReturnsDelta(t *testing.T) {
 	db := testStateDB(t)
 	key, err := crypto.HexToECDSA("ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80")

@@ -66,6 +66,7 @@ type App struct {
 	executor      evm.Executor
 	executorMode  string
 	workers       int
+	autoWorkers   bool
 }
 
 type pendingBlock struct {
@@ -165,6 +166,7 @@ func NewApp(dbPath string, logger *slog.Logger) (*App, error) {
 		executor:      evm.NewSequentialExecutor(newChainConfig(), chainID),
 		executorMode:  "sequential",
 		workers:       4,
+		autoWorkers:   false,
 	}, nil
 }
 
@@ -179,6 +181,30 @@ func (app *App) ConfigureExecutor(mode string, workers int) error {
 	}
 	app.executorMode = mode
 	app.workers = workers
+	app.autoWorkers = false
+	if mode == "parallel" {
+		app.executor = evm.NewParallelExecutor(newChainConfig(), chainID, workers)
+	} else {
+		app.executor = evm.NewSequentialExecutor(newChainConfig(), chainID)
+	}
+	return nil
+}
+
+// ConfigureAdaptiveExecutor bật chế độ tự điều chỉnh số worker cho executor song song.
+// Chế độ tuần tự bỏ qua bộ điều khiển worker.
+func (app *App) ConfigureAdaptiveExecutor(mode string) error {
+	if mode != "sequential" && mode != "parallel" {
+		return fmt.Errorf("unknown executor %q (want sequential or parallel)", mode)
+	}
+	app.executorMode = mode
+	app.autoWorkers = mode == "parallel"
+	if app.autoWorkers {
+		app.workers = 0
+		app.executor = evm.NewAdaptiveParallelExecutor(newChainConfig(), chainID, 0)
+	} else {
+		app.workers = 1
+		app.executor = evm.NewSequentialExecutor(newChainConfig(), chainID)
+	}
 	return nil
 }
 
@@ -265,17 +291,27 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		Coinbase: common.BytesToAddress(req.ProposerAddress), GasLimit: blockGasLimit,
 		Random: common.Hash(rand), GetHash: getHash, BaseFee: new(big.Int), PreviousRoot: app.appHash,
 	}
-	if app.executorMode == "parallel" {
-		app.executor = evm.NewParallelExecutor(chainConfig, chainID, app.workers)
-	} else {
-		app.executor = evm.NewSequentialExecutor(chainConfig, chainID)
+	if app.executor == nil {
+		if app.executorMode == "parallel" {
+			if app.autoWorkers {
+				app.executor = evm.NewAdaptiveParallelExecutor(chainConfig, chainID, 0)
+			} else {
+				app.executor = evm.NewParallelExecutor(chainConfig, chainID, app.workers)
+			}
+		} else {
+			app.executor = evm.NewSequentialExecutor(chainConfig, chainID)
+		}
 	}
 	blockResult, err := app.executor.ExecuteBlock(stateDB, blockEnv, transactions)
 	if err != nil {
 		return nil, fmt.Errorf("execute block: %w", err)
 	}
 	if len(blockResult.Metrics) > 0 {
-		app.logger.Info("block executor metrics", "height", req.Height, "executor", app.executorMode, "workers", app.workers, "metrics", blockResult.Metrics)
+		workerMode := fmt.Sprint(app.workers)
+		if app.autoWorkers {
+			workerMode = "auto"
+		}
+		app.logger.Info("block executor metrics", "height", req.Height, "executor", app.executorMode, "workers", workerMode, "metrics", blockResult.Metrics)
 	}
 	for i, result := range blockResult.Results {
 		if preResults[i] != nil {

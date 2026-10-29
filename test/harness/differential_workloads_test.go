@@ -114,6 +114,75 @@ func newCounterContentionWorkload(t testing.TB, increments int) differentialWork
 	}
 }
 
+// newMultiSenderCounterContentionWorkload sends calls from distinct wallets to
+// the same Counter so conflicts come from the shared storage slot, not sender nonce.
+func newMultiSenderCounterContentionWorkload(t testing.TB, increments int) differentialWorkload {
+	t.Helper()
+	if increments <= 0 {
+		t.Fatal("increment count must be positive")
+	}
+	// Account 0 deploys the Counter; each remaining account sends one call.
+	pool := newAccountPool(t, 0xC017AC7, increments+1)
+	deployer := pool[0]
+	contract := crypto.CreateAddress(deployer.address, 0)
+	transactions := make([]*types.Transaction, 0, increments+1)
+	transactions = append(transactions, signedTx(t, deployer.keyHex, 0, 3_000_000, nil, new(big.Int), readCreationCode(t, "Counter")))
+	accounts := make([]common.Address, 0, increments+2)
+	balances := make(map[common.Address]*big.Int, len(pool))
+	for _, account := range pool {
+		accounts = append(accounts, account.address)
+		balances[account.address] = new(big.Int).Mul(big.NewInt(1000), big.NewInt(1e18))
+	}
+	for i := 1; i < len(pool); i++ {
+		transactions = append(transactions, signedTx(t, pool[i].keyHex, 0, 100_000, &contract, new(big.Int), common.FromHex("0xd09de08a")))
+	}
+	accounts = append(accounts, contract)
+	return differentialWorkload{
+		name: "counter-hot-storage-multiple-senders", transactions: transactions,
+		sender: deployer.address, contract: contract,
+		accounts: accounts, initialBalances: balances,
+		storageSlots: map[common.Address][]common.Hash{contract: {common.Hash{}}},
+		env:          evm.BlockEnv{Height: 12, Time: 12, GasLimit: blockGasLimit, Random: common.HexToHash("0xC017AC7"), BaseFee: new(big.Int)},
+	}
+}
+
+// newAccessListCounterContentionWorkload kiểm tra access list EIP-2930 đúng hoặc
+// thiếu ô Counter.count, trong khi các ví khác nhau cùng gọi một contract.
+func newAccessListCounterContentionWorkload(t testing.TB, calls int, accurate bool) differentialWorkload {
+	t.Helper()
+	if calls <= 0 {
+		t.Fatal("access-list call count must be positive")
+	}
+	pool := newAccountPool(t, 0xACCE551, calls+1)
+	deployer := pool[0]
+	contract := crypto.CreateAddress(deployer.address, 0)
+	transactions := make([]*types.Transaction, 0, calls+1)
+	transactions = append(transactions, signedTx(t, deployer.keyHex, 0, 3_000_000, nil, new(big.Int), readCreationCode(t, "Counter")))
+	accounts := make([]common.Address, 0, calls+2)
+	balances := make(map[common.Address]*big.Int, len(pool))
+	for _, account := range pool {
+		accounts = append(accounts, account.address)
+		balances[account.address] = new(big.Int).Mul(big.NewInt(1000), big.NewInt(1e18))
+	}
+	declaredSlot := common.Hash{}
+	workloadName := "counter-access-list-accurate"
+	if !accurate {
+		declaredSlot = common.BigToHash(big.NewInt(1))
+		workloadName = "counter-access-list-inaccurate"
+	}
+	accessList := types.AccessList{{Address: contract, StorageKeys: []common.Hash{declaredSlot}}}
+	for i := 1; i < len(pool); i++ {
+		transactions = append(transactions, signedAccessListTx(t, pool[i].keyHex, 0, 120_000, &contract, new(big.Int), common.FromHex("0xd09de08a"), accessList))
+	}
+	accounts = append(accounts, contract)
+	return differentialWorkload{
+		name: workloadName, transactions: transactions, sender: deployer.address, contract: contract,
+		accounts: accounts, initialBalances: balances,
+		storageSlots: map[common.Address][]common.Hash{contract: {common.Hash{}, common.BigToHash(big.NewInt(1))}},
+		env:          evm.BlockEnv{Height: 13, Time: 13, GasLimit: blockGasLimit, Random: common.HexToHash("0xACCE551"), BaseFee: new(big.Int)},
+	}
+}
+
 // forwarderCreationCode tạo hợp đồng Shanghai nhỏ, chuyển calldata đến một
 // đích cố định bằng CALL. Nhờ vậy workload có lời gọi hợp đồng lồng nhau thực
 // tế mà không cần trình biên dịch Solidity khi chạy kiểm thử.
@@ -542,4 +611,13 @@ func TestDifferentialHarnessTenThousandSeededMixedTransactions(t *testing.T) {
 	if len(pluto.results) != 10_000 {
 		t.Fatalf("processed %d transactions, want 10000", len(pluto.results))
 	}
+	if len(parallel.results) != 10_000 {
+		t.Fatalf("parallel executor processed %d transactions, want 10000", len(parallel.results))
+	}
+	if parallel.metrics["worker_count"] != 4 {
+		t.Fatalf("parallel executor used %v workers, want 4", parallel.metrics["worker_count"])
+	}
+	t.Logf("Đã đối chiếu seed=%d: %d giao dịch trên Pluto tuần tự, Pluto song song (4 workers) và geth.", seed, len(workload.transactions))
+	t.Log("Đã kiểm tra từng giao dịch/receipt, gas, logs, dữ liệu trả về, số dư, nonce, code, storage và state root Pluto giữa hai executor.")
+	t.Logf("Workload gồm: chuyển coin=%d, gọi Counter=%d, ERC-20=%d, revert=%d, out-of-gas=%d.", nativeTransfers, counterCalls, tokenTransfers, revertCalls, outOfGasCalls)
 }

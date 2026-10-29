@@ -3,6 +3,7 @@ package harness_test
 import (
 	"fmt"
 	"math"
+	"os"
 	"runtime"
 	"sort"
 	"testing"
@@ -21,43 +22,53 @@ type comparisonMode struct {
 	name       string
 	workers    int
 	sequential bool
+	automatic  bool
 }
 
 type comparisonSample struct {
-	duration time.Duration
-	bytes    uint64
-	allocs   uint64
-	result   differentialObservation
+	duration  time.Duration
+	bytes     uint64
+	allocs    uint64
+	workerMin int
+	workerMax int
+	workerAvg float64
+	aborts    float64
+	retries   float64
+	result    differentialObservation
 }
 
 type comparisonSummary struct {
 	medianDuration time.Duration
 	medianBytes    uint64
 	medianAllocs   uint64
+	workerMin      int
+	workerMax      int
+	workerAvg      float64
+	medianAborts   float64
+	medianRetries  float64
 	coefficientVar float64
 	samples        []comparisonSample
 }
 
-// TestSequentialParallelPerformanceReport in báo cáo dễ đọc, có thể tái lập để
-// so sánh thực thi khối. Trước khi xác nhận kết quả đúng, hàm đối chiếu từng
-// lượt đo với cả bộ thực thi tuần tự và geth.
+// TestSequentialParallelPerformanceReport emits a compact, repeatable report.
+// Each measured result is checked against both the sequential executor and geth.
 func TestSequentialParallelPerformanceReport(t *testing.T) {
 	const seed = 0x4d345f
 	modes := []comparisonMode{
-		{name: "Tuần tự", sequential: true},
-		{name: "Song song, 1 worker", workers: 1},
-		{name: "Song song, 2 workers", workers: 2},
-		{name: "Song song, 4 workers", workers: 4},
-		{name: "Song song, 8 workers", workers: 8},
+		{name: "Sequential", sequential: true},
+		{name: "Parallel auto", automatic: true},
+		{name: "Parallel 1w", workers: 1},
+		{name: "Parallel 2w", workers: 2},
+		{name: "Parallel 4w", workers: 4},
+		{name: "Parallel 8w", workers: 8},
 	}
 
-	t.Log("============================================================")
-	t.Log("BÁO CÁO SO SÁNH EXECUTOR TUẦN TỰ VÀ SONG SONG")
-	t.Logf("Môi trường: Go %s | %s/%s | CPU logic: %d | GOMAXPROCS: %d", runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), runtime.GOMAXPROCS(0))
-	t.Logf("Số lần đo: %d mẫu × %d block/mẫu | Seed workload: 0x%x | Loại tải: chuyển khoản độc lập, mỗi ví gửi một giao dịch", comparisonReportRepetitions, comparisonBlocksPerSample, seed)
-	t.Log("Phạm vi: chỉ đo ExecuteBlock; không tính khởi động node, RPC, tạo Pebble DB hoặc nạp state ban đầu.")
-	t.Log("Bộ nhớ là tổng byte/số lần cấp phát trong ExecuteBlock, không phải RAM đỉnh của tiến trình.")
-	t.Log("============================================================")
+	fmt.Fprintln(os.Stdout, "\nPLUTO EXECUTOR COMPARISON")
+	fmt.Fprintf(os.Stdout, "Go %s | %s/%s | CPU %d | GOMAXPROCS %d\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), runtime.GOMAXPROCS(0))
+	fmt.Fprintf(os.Stdout, "Workload: independent native-coin transfers | seed 0x%x\n", seed)
+	fmt.Fprintf(os.Stdout, "Measurement: median of %d samples; %d blocks per sample; ExecuteBlock only\n", comparisonReportRepetitions, comparisonBlocksPerSample)
+	fmt.Fprintln(os.Stdout, "Correctness: each mode checked against Sequential; visible state and tx outputs also checked against geth")
+	fmt.Fprintln(os.Stdout, "Memory: allocated bytes and allocation count per block; not peak process RAM")
 
 	parallelFasterSizes := 0
 	uncertainSizes := 0
@@ -67,8 +78,7 @@ func TestSequentialParallelPerformanceReport(t *testing.T) {
 			geth := runGethDifferentialWorkload(t, workload)
 			stats := make(map[string]comparisonSummary, len(modes))
 
-			// Chạy làm nóng mỗi bộ thực thi một lần. Lượt này được kiểm tra tính đúng
-			// nhưng không tính vào các mẫu báo cáo.
+			// Warm up each executor; correctness is checked, but timings are discarded.
 			for _, mode := range modes {
 				got := runComparisonSample(t, workload, mode).result
 				if mismatches := differentialMismatches(workload, mode.name, got, "geth", geth); len(mismatches) > 0 {
@@ -81,23 +91,22 @@ func TestSequentialParallelPerformanceReport(t *testing.T) {
 			}
 			for repetition := 0; repetition < comparisonReportRepetitions; repetition++ {
 				sequential := runComparisonSample(t, workload, modes[0])
-				if mismatches := differentialMismatches(workload, "Tuần tự", sequential.result, "geth", geth); len(mismatches) > 0 {
-					t.Fatalf("repetition %d sequential/geth mismatch: %s", repetition+1, mismatches[0])
+				if mismatches := differentialMismatches(workload, modes[0].name, sequential.result, "geth", geth); len(mismatches) > 0 {
+					t.Fatalf("sample %d sequential/geth mismatch: %s", repetition+1, mismatches[0])
 				}
 				seqSummary := stats[modes[0].name]
 				seqSummary.samples = append(seqSummary.samples, sequential)
 				stats[modes[0].name] = seqSummary
 
-				// Đổi thứ tự đo các cấu hình song song để giảm thiên lệch do luôn đo
-				// cùng số worker trước tiên hoặc cuối cùng.
+				// Rotate parallel modes so a fixed worker count is not always measured first.
 				for offset := 0; offset < len(modes)-1; offset++ {
 					mode := modes[1+(offset+repetition)%(len(modes)-1)]
 					sample := runComparisonSample(t, workload, mode)
-					if mismatches := differentialMismatches(workload, mode.name, sample.result, "Tuần tự", sequential.result); len(mismatches) > 0 {
-						t.Fatalf("repetition %d %s differs from sequential: %s", repetition+1, mode.name, mismatches[0])
+					if mismatches := differentialMismatches(workload, mode.name, sample.result, modes[0].name, sequential.result); len(mismatches) > 0 {
+						t.Fatalf("sample %d %s differs from sequential: %s", repetition+1, mode.name, mismatches[0])
 					}
 					if mismatches := differentialMismatches(workload, mode.name, sample.result, "geth", geth); len(mismatches) > 0 {
-						t.Fatalf("repetition %d %s differs from geth: %s", repetition+1, mode.name, mismatches[0])
+						t.Fatalf("sample %d %s differs from geth: %s", repetition+1, mode.name, mismatches[0])
 					}
 					modeSummary := stats[mode.name]
 					modeSummary.samples = append(modeSummary.samples, sample)
@@ -112,72 +121,91 @@ func TestSequentialParallelPerformanceReport(t *testing.T) {
 			fastestName := modes[0].name
 			fastestTime := seq.medianDuration
 
-			t.Log("")
-			t.Logf("Giao dịch: %s | workers song song: 1, 2, 4, 8 | đo: %d mẫu × %d block", formatCount(txCount), comparisonReportRepetitions, comparisonBlocksPerSample)
-			t.Log("Chế độ                 Trung vị/block   So với tuần tự       Cấp phát vs tuần tự       Số lần cấp phát   Đúng đắn   Độ ổn định")
+			fmt.Fprintf(os.Stdout, "\n--- %s transactions/block ---\n", formatCount(txCount))
+			fmt.Fprintln(os.Stdout, "PERFORMANCE (throughput is executor-only, not network TPS)")
+			fmt.Fprintln(os.Stdout, "Mode           ms/block  tx/s*      vs seq       MiB/block       allocs/block")
 			for _, mode := range modes {
 				current := stats[mode.name]
-				speedup := float64(seq.medianDuration) / float64(current.medianDuration)
-				delta := (float64(current.medianDuration)/float64(seq.medianDuration) - 1) * 100
-				comparison := "mốc chuẩn"
-				memoryComparison := "mốc chuẩn"
+				speedup := "baseline"
 				if !mode.sequential {
-					if delta < 0 {
-						comparison = fmt.Sprintf("nhanh hơn %.1f%% (%.2fx)", -delta, speedup)
-					} else if delta > 0 {
-						comparison = fmt.Sprintf("chậm hơn %.1f%% (%.2fx)", delta, speedup)
-					} else {
-						comparison = "xấp xỉ ngang (1.00x)"
-					}
-					memoryDelta := (float64(current.medianBytes)/float64(seq.medianBytes) - 1) * 100
-					memoryComparison = fmt.Sprintf("%s MiB (%+.1f%%)", formatMiB(current.medianBytes), memoryDelta)
+					speedup = formatTimeComparison(seq.medianDuration, current.medianDuration)
 				}
-				stability := "ổn định"
-				if current.coefficientVar > 0.10 {
-					stability = fmt.Sprintf("dao động %.1f%% (cẩn trọng)", current.coefficientVar*100)
-				}
+				memory := formatMiB(current.medianBytes)
 				if mode.sequential {
-					memoryComparison = fmt.Sprintf("%s MiB (mốc)", formatMiB(current.medianBytes))
+					memory += " (base)"
+				} else if seq.medianBytes > 0 {
+					memory += fmt.Sprintf(" (%+.0f%%)", (float64(current.medianBytes)/float64(seq.medianBytes)-1)*100)
 				}
-				t.Logf("%-22s %9.3f ms   %-20s %-24s %14s   Đạt       %s", mode.name, float64(current.medianDuration)/float64(time.Millisecond), comparison, memoryComparison, formatCount64(current.medianAllocs), stability)
+				fmt.Fprintf(os.Stdout, "%-14s %-9s %-10s %-12s %-15s %s\n",
+					mode.name,
+					formatDuration(current.medianDuration),
+					formatThroughput(txCount, current.medianDuration),
+					speedup,
+					memory,
+					formatCount64(current.medianAllocs),
+				)
 				if current.medianDuration < fastestTime {
 					fastestName, fastestTime = mode.name, current.medianDuration
 				}
 			}
+			fmt.Fprintln(os.Stdout, "\nPARALLEL DETAILS")
+			fmt.Fprintln(os.Stdout, "Mode           configured  active workers (min..max / avg)  abort/block  retry/block  result")
+			for _, mode := range modes[1:] {
+				current := stats[mode.name]
+				configured := "auto"
+				if !mode.automatic {
+					configured = fmt.Sprintf("%d", mode.workers)
+				}
+				active := "not reported"
+				if current.workerMin > 0 {
+					active = fmt.Sprintf("%d..%d / %.1f", current.workerMin, current.workerMax, current.workerAvg)
+				}
+				fmt.Fprintf(os.Stdout, "%-14s %-11s %-33s %-12.1f %-12.1f PASS\n", mode.name, configured, active, current.medianAborts, current.medianRetries)
+			}
+			fmt.Fprintln(os.Stdout, "PASS = tx status/gas/logs and visible state matched; Pluto state root matched Sequential.")
+			fmt.Fprintln(os.Stdout, "Auto uses GOMAXPROCS as its worker limit and adjusts for conflicts; independent transfers may keep the full limit.")
 
 			fastest := stats[fastestName]
-			if seq.coefficientVar > 0.10 || fastest.coefficientVar > 0.10 {
+			if seq.medianDuration <= 0 || fastest.medianDuration <= 0 {
 				uncertainSizes++
-				t.Logf("Nhận xét: trung vị thấp nhất là %s, nhưng số đo dao động lớn; chạy lại trên máy ít tải hoặc tăng số mẫu trước khi kết luận.", fastestName)
+				fmt.Fprintln(os.Stdout, "Assessment: measurement too short; increase samples before drawing a speed conclusion.")
+			} else if seq.coefficientVar > 0.10 || fastest.coefficientVar > 0.10 {
+				uncertainSizes++
+				fmt.Fprintf(os.Stdout, "Assessment: %s has the lowest median, but timing varies by more than 10%%; repeat on an idle machine.\n", fastestName)
 			} else if fastestName == modes[0].name {
-				t.Log("Nhận xét: tuần tự nhanh nhất ở quy mô này; các cấu hình song song chưa đem lại lợi ích đo được.")
+				fmt.Fprintln(os.Stdout, "Assessment: sequential is fastest for this workload size; parallel has no measured speed benefit here.")
 			} else {
 				parallelFasterSizes++
-				t.Logf("Nhận xét: %s nhanh nhất, nhanh hơn tuần tự %.2fx ở workload này.", fastestName, float64(seq.medianDuration)/float64(fastest.medianDuration))
+				fmt.Fprintf(os.Stdout, "Assessment: %s is fastest here (%.2fx sequential speed).\n", fastestName, float64(seq.medianDuration)/float64(fastest.medianDuration))
 			}
 		})
 	}
 
-	t.Log("")
-	if uncertainSizes == 0 {
-		t.Logf("KẾT LUẬN: song song nhanh hơn tuần tự một cách ổn định ở %d/3 quy mô được đo. Kết luận chỉ áp dụng cho workload chuyển khoản độc lập và cấu hình/máy ghi ở trên.", parallelFasterSizes)
+	fmt.Fprintln(os.Stdout, "\nFINAL: performance conclusion applies only to this transfer workload and recorded machine; correctness was checked for every row.")
+	if uncertainSizes > 0 {
+		fmt.Fprintf(os.Stdout, "Parallel was faster and stable at %d/3 sizes; %d/3 sizes need a more stable measurement.\n", parallelFasterSizes, uncertainSizes)
 	} else {
-		t.Logf("KẾT LUẬN: %d/3 quy mô có trung vị song song tốt hơn và ổn định; %d/3 quy mô còn dao động lớn nên chưa đủ cơ sở kết luận. Kết quả chỉ áp dụng cho workload chuyển khoản độc lập và cấu hình/máy ghi ở trên.", parallelFasterSizes, uncertainSizes)
+		fmt.Fprintf(os.Stdout, "Parallel was fastest and stable at %d/3 sizes.\n", parallelFasterSizes)
 	}
 }
 
 func runComparisonSample(t *testing.T, workload differentialWorkload, mode comparisonMode) comparisonSample {
 	t.Helper()
 	var executor evm.Executor
-	if mode.sequential {
+	switch {
+	case mode.sequential:
 		executor = evm.NewSequentialExecutor(newChainConfig(), chainID)
-	} else {
+	case mode.automatic:
+		executor = evm.NewAdaptiveParallelExecutor(newChainConfig(), chainID, 0)
+	default:
 		executor = evm.NewParallelExecutor(newChainConfig(), chainID, mode.workers)
 	}
 
 	balances := workloadBalances(workload)
 	var totalDuration time.Duration
 	var totalBytes, totalAllocs uint64
+	var workerMin, workerMax int
+	var workerAvg, aborts, retries float64
 	var observation differentialObservation
 	for i := 0; i < comparisonBlocksPerSample; i++ {
 		db, err := store.NewPebbleDB("comparison-report", t.TempDir())
@@ -211,9 +239,29 @@ func runComparisonSample(t *testing.T, workload differentialWorkload, mode compa
 		totalDuration += duration
 		totalBytes += after.TotalAlloc - before.TotalAlloc
 		totalAllocs += after.Mallocs - before.Mallocs
+		if !mode.sequential {
+			metrics := result.Metrics
+			min := int(metrics["worker_active_min"])
+			max := int(metrics["worker_active_max"])
+			if min > 0 && (workerMin == 0 || min < workerMin) {
+				workerMin = min
+			}
+			if max > workerMax {
+				workerMax = max
+			}
+			workerAvg += metrics["worker_active_avg"]
+			aborts += metrics["abort_total"]
+			retryCount, hasRetryMetric := metrics["retry_total"]
+			if !hasRetryMetric {
+				// In the specialized transfer path each abort reruns that transaction once.
+				retryCount = metrics["abort_total"]
+			}
+			retries += retryCount
+		}
 		current := capturePlutoObservation(stateDB, result, workload)
 		current.stateRoot = common.BytesToHash(result.StateRoot[:])
 		current.hasStateRoot = true
+		current.metrics = result.Metrics
 		if i == 0 {
 			observation = current
 		} else if mismatches := differentialMismatches(workload, mode.name, current, "same-mode sample", observation); len(mismatches) > 0 {
@@ -225,10 +273,15 @@ func runComparisonSample(t *testing.T, workload differentialWorkload, mode compa
 		}
 	}
 	return comparisonSample{
-		duration: totalDuration / comparisonBlocksPerSample,
-		bytes:    totalBytes / comparisonBlocksPerSample,
-		allocs:   totalAllocs / comparisonBlocksPerSample,
-		result:   observation,
+		duration:  totalDuration / comparisonBlocksPerSample,
+		bytes:     totalBytes / comparisonBlocksPerSample,
+		allocs:    totalAllocs / comparisonBlocksPerSample,
+		workerMin: workerMin,
+		workerMax: workerMax,
+		workerAvg: workerAvg / comparisonBlocksPerSample,
+		aborts:    aborts / comparisonBlocksPerSample,
+		retries:   retries / comparisonBlocksPerSample,
+		result:    observation,
 	}
 }
 
@@ -236,12 +289,25 @@ func summarizeComparisonSamples(samples []comparisonSample) comparisonSummary {
 	durations := make([]int64, len(samples))
 	bytes := make([]uint64, len(samples))
 	allocs := make([]uint64, len(samples))
+	workers := make([]float64, len(samples))
+	aborts := make([]float64, len(samples))
+	retries := make([]float64, len(samples))
 	mean := 0.0
+	workerMin, workerMax := 0, 0
 	for i, sample := range samples {
 		durations[i] = int64(sample.duration)
 		bytes[i] = sample.bytes
 		allocs[i] = sample.allocs
+		workers[i] = sample.workerAvg
+		aborts[i] = sample.aborts
+		retries[i] = sample.retries
 		mean += float64(sample.duration)
+		if sample.workerMin > 0 && (workerMin == 0 || sample.workerMin < workerMin) {
+			workerMin = sample.workerMin
+		}
+		if sample.workerMax > workerMax {
+			workerMax = sample.workerMax
+		}
 	}
 	mean /= float64(len(samples))
 	variance := 0.0
@@ -257,19 +323,34 @@ func summarizeComparisonSamples(samples []comparisonSample) comparisonSummary {
 	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
 	sort.Slice(bytes, func(i, j int) bool { return bytes[i] < bytes[j] })
 	sort.Slice(allocs, func(i, j int) bool { return allocs[i] < allocs[j] })
+	sort.Float64s(workers)
+	sort.Float64s(aborts)
+	sort.Float64s(retries)
 	middle := len(samples) / 2
 	return comparisonSummary{
 		medianDuration: time.Duration(durations[middle]),
 		medianBytes:    bytes[middle],
 		medianAllocs:   allocs[middle],
+		workerMin:      workerMin,
+		workerMax:      workerMax,
+		workerAvg:      workers[middle],
+		medianAborts:   aborts[middle],
+		medianRetries:  retries[middle],
 		coefficientVar: cv,
 		samples:        samples,
 	}
 }
 
+func formatThroughput(transactions int, duration time.Duration) string {
+	if duration <= 0 {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.0f", float64(transactions)/duration.Seconds())
+}
+
 func formatCount(count int) string {
 	if count >= 1000 {
-		return fmt.Sprintf("%s.%03d", formatCount(count/1000), count%1000)
+		return fmt.Sprintf("%s,%03d", formatCount(count/1000), count%1000)
 	}
 	return fmt.Sprintf("%d", count)
 }
@@ -280,4 +361,29 @@ func formatCount64(count uint64) string {
 
 func formatMiB(bytes uint64) string {
 	return fmt.Sprintf("%.2f", float64(bytes)/(1024*1024))
+}
+
+func formatDuration(duration time.Duration) string {
+	if duration <= 0 {
+		return "n/a"
+	}
+	if duration < time.Millisecond {
+		return fmt.Sprintf("%.1f us", float64(duration)/float64(time.Microsecond))
+	}
+	return fmt.Sprintf("%.2f ms", float64(duration)/float64(time.Millisecond))
+}
+
+func formatTimeComparison(sequential, parallel time.Duration) string {
+	if sequential <= 0 || parallel <= 0 {
+		return "n/a"
+	}
+	speedup := float64(sequential) / float64(parallel)
+	delta := (float64(parallel)/float64(sequential) - 1) * 100
+	if delta < -0.05 {
+		return fmt.Sprintf("%.2fx faster", speedup)
+	}
+	if delta > 0.05 {
+		return fmt.Sprintf("%.2fx slower", 1/speedup)
+	}
+	return fmt.Sprintf("%.2fx equal", speedup)
 }

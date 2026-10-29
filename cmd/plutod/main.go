@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,15 +32,27 @@ import (
 )
 
 var (
-	homeDir     string
-	executor    string
-	workerCount int
+	homeDir       string
+	executor      string
+	workerSetting string
 )
 
 func init() {
 	flag.StringVar(&homeDir, "home", "", "Path to the home directory")
 	flag.StringVar(&executor, "executor", "sequential", "Block executor: sequential or parallel")
-	flag.IntVar(&workerCount, "workers", 4, "Parallel executor worker count")
+	flag.StringVar(&workerSetting, "workers", "auto", "Parallel executor workers: auto or a positive integer")
+}
+
+func parseWorkerSetting(setting string) (int, bool, error) {
+	setting = strings.TrimSpace(setting)
+	if strings.EqualFold(setting, "auto") {
+		return 0, true, nil
+	}
+	workers, err := strconv.Atoi(setting)
+	if err != nil || workers < 1 {
+		return 0, false, fmt.Errorf("workers must be 'auto' or a positive integer, got %q", setting)
+	}
+	return workers, false, nil
 }
 
 // Bộ cung cấp cơ sở dữ liệu Pebble.
@@ -48,6 +62,10 @@ func PebbleDBProvider(ctx *cfg.DBContext) (dbm.DB, error) {
 
 func main() {
 	flag.Parse()
+	workers, autoWorkers, err := parseWorkerSetting(workerSetting)
+	if err != nil {
+		panic(err)
+	}
 	if homeDir == "" {
 		homeDir = os.ExpandEnv("$HOME/.plutod")
 	}
@@ -95,7 +113,12 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("failed to create app: %w", err))
 	}
-	if err := myApp.ConfigureExecutor(executor, workerCount); err != nil {
+	if autoWorkers {
+		err = myApp.ConfigureAdaptiveExecutor(executor)
+	} else {
+		err = myApp.ConfigureExecutor(executor, workers)
+	}
+	if err != nil {
 		panic(fmt.Errorf("configure block executor: %w", err))
 	}
 	defer myApp.Close()

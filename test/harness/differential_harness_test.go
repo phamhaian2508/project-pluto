@@ -67,6 +67,23 @@ func signedTx(t testing.TB, keyHex string, nonce, gas uint64, to *common.Address
 	return tx
 }
 
+func signedAccessListTx(t testing.TB, keyHex string, nonce, gas uint64, to *common.Address, value *big.Int, data []byte, accessList types.AccessList) *types.Transaction {
+	t.Helper()
+	key, err := crypto.HexToECDSA(keyHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := types.NewTx(&types.AccessListTx{
+		ChainID: new(big.Int).Set(chainID), Nonce: nonce, GasPrice: new(big.Int), Gas: gas,
+		To: to, Value: new(big.Int).Set(value), Data: append([]byte(nil), data...), AccessList: accessList,
+	})
+	tx, err = types.SignTx(tx, types.LatestSignerForChainID(chainID), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tx
+}
+
 // Bộ kiểm thử này chủ ý so sánh kết quả giao dịch và trạng thái tài khoản có
 // thể quan sát, thay vì mã gốc trạng thái: Pluto hiện dùng mã băm ứng dụng riêng,
 // còn geth dùng mã gốc cây Merkle Patricia của Ethereum.

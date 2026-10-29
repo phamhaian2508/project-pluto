@@ -302,6 +302,10 @@ func stateVersionedWrites(state *PebbleStateDB, keys []MVKey) map[MVKey][]byte {
 			slot := state.GetState(key.Address, key.Slot)
 			if slot != (common.Hash{}) {
 				values[key] = slot.Bytes()
+			} else {
+				// Include an explicit tombstone so a transition to zero still
+				// advances the MVMemory version and invalidates stale readers.
+				values[key] = nil
 			}
 		case MVAccount:
 			account := state.getAccount(key.Address)
@@ -431,10 +435,13 @@ func (s *TxState) Empty(addr common.Address) bool {
 // chỉ gồm chuyển khoản EOA không phí đã được chứng nhận. P vẫn tắt cho đến khi
 // có thể tạo và đánh giá mô tả thực thi đã chứng nhận.
 type ParallelExecutor struct {
-	ChainConfig *params.ChainConfig
-	ChainID     *big.Int
-	Workers     int
-	Checkpoints CheckpointConfig
+	ChainConfig     *params.ChainConfig
+	ChainID         *big.Int
+	Workers         int
+	AutoWorkers     bool
+	Checkpoints     CheckpointConfig
+	workerMu        sync.Mutex
+	adaptiveWorkers int
 }
 
 func NewParallelExecutor(config *params.ChainConfig, chainID *big.Int, workers int) *ParallelExecutor {
@@ -445,6 +452,35 @@ func NewParallelExecutor(config *params.ChainConfig, chainID *big.Int, workers i
 		ChainConfig: config, ChainID: new(big.Int).Set(chainID), Workers: workers,
 		Checkpoints: DefaultCheckpointConfig(),
 	}
+}
+
+// NewAdaptiveParallelExecutor dùng GOMAXPROCS làm giới hạn trên và điều chỉnh
+// số worker giữa các đợt dựa trên xung đột đọc/ghi quan sát được.
+func NewAdaptiveParallelExecutor(config *params.ChainConfig, chainID *big.Int, maxWorkers int) *ParallelExecutor {
+	executor := NewParallelExecutor(config, chainID, maxWorkers)
+	executor.AutoWorkers = true
+	return executor
+}
+
+func (e *ParallelExecutor) startingWorkerCount(limit int) int {
+	if e == nil || !e.AutoWorkers {
+		return limit
+	}
+	e.workerMu.Lock()
+	defer e.workerMu.Unlock()
+	if e.adaptiveWorkers < 1 || e.adaptiveWorkers > limit {
+		e.adaptiveWorkers = limit
+	}
+	return e.adaptiveWorkers
+}
+
+func (e *ParallelExecutor) saveAdaptiveWorkerCount(count int) {
+	if e == nil || !e.AutoWorkers || count < 1 {
+		return
+	}
+	e.workerMu.Lock()
+	e.adaptiveWorkers = count
+	e.workerMu.Unlock()
 }
 
 // ConfigureCheckpoints bật chụp/khôi phục có tính tất định theo chính sách đã
@@ -514,6 +550,7 @@ func (e *ParallelExecutor) executeStaticBlock(base StateReader, env BlockEnv, tx
 	started := time.Now()
 	var analyzeNanos, executeNanos, validateNanos, resolveNanos int64
 	var incarnationTotal, abortTotal, staticCount, parallelCount, opaqueCount float64
+	var workerStats workerUsage
 
 	for i := 0; i < len(txs); {
 		access := accesses[i]
@@ -543,6 +580,7 @@ func (e *ParallelExecutor) executeStaticBlock(base StateReader, env BlockEnv, tx
 		}
 		staticCount += float64(len(wave))
 		if len(wave) == 1 {
+			workerStats.add(1)
 			segmentEnv := env
 			segmentEnv.GasLimit = remainingGas
 			execStart := time.Now()
@@ -587,6 +625,7 @@ func (e *ParallelExecutor) executeStaticBlock(base StateReader, env BlockEnv, tx
 		if workerCount > len(attempts) {
 			workerCount = len(attempts)
 		}
+		workerStats.add(workerCount)
 		for worker := 0; worker < workerCount; worker++ {
 			worker := worker
 			wg.Add(1)
@@ -650,6 +689,7 @@ func (e *ParallelExecutor) executeStaticBlock(base StateReader, env BlockEnv, tx
 	result.Metrics["tx_class_p"] = 0
 	result.Metrics["tx_class_o"] = opaqueCount
 	result.Metrics["worker_count"] = float64(workers)
+	workerStats.record(result.Metrics, e.AutoWorkers)
 	result.Metrics["tx_parallel"] = parallelCount
 	result.Metrics["incarnation_total"] = incarnationTotal
 	result.Metrics["abort_total"] = abortTotal
@@ -679,6 +719,70 @@ type staticTransfer struct {
 	recipient common.Address
 	reads     MVKeySet
 	writes    MVKeySet
+}
+
+type workerUsage struct {
+	min     int
+	max     int
+	total   int
+	samples int
+}
+
+func (usage *workerUsage) add(count int) {
+	if usage == nil || count < 1 {
+		return
+	}
+	if usage.samples == 0 || count < usage.min {
+		usage.min = count
+	}
+	if count > usage.max {
+		usage.max = count
+	}
+	usage.total += count
+	usage.samples++
+}
+
+func (usage workerUsage) record(metrics map[string]float64, automatic bool) {
+	if metrics == nil {
+		return
+	}
+	if automatic {
+		metrics["worker_auto"] = 1
+	} else {
+		metrics["worker_auto"] = 0
+	}
+	if usage.samples == 0 {
+		return
+	}
+	metrics["worker_active_min"] = float64(usage.min)
+	metrics["worker_active_max"] = float64(usage.max)
+	metrics["worker_active_avg"] = float64(usage.total) / float64(usage.samples)
+}
+
+// adaptWorkerCount giữ mức song song khi ít xung đột và hạ worker khi nhiều
+// giao dịch phải chạy lại vì đã đọc phiên bản trạng thái cũ.
+func adaptWorkerCount(current, limit, conflicts, txCount int) int {
+	if current < 1 {
+		current = 1
+	}
+	if limit < current {
+		limit = current
+	}
+	if conflicts > 0 {
+		if conflicts*4 >= txCount {
+			current /= 2
+		} else {
+			current--
+		}
+		if current < 1 {
+			current = 1
+		}
+		return current
+	}
+	if current < limit && txCount >= current {
+		current++
+	}
+	return current
 }
 
 func (e *ParallelExecutor) staticTransferAccess(base StateReader, tx *types.Transaction, baseFee *big.Int) (staticTransfer, bool) {
