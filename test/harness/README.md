@@ -1,116 +1,207 @@
-# Bộ kiểm thử đối chiếu EVM của Pluto
+﻿# Hướng dẫn kiểm thử và đo hiệu năng
 
-Bộ kiểm thử nằm ngoài các gói production, nên chạy nó không làm thay đổi cách node hoạt động. Harness tạo trạng thái Pebble chỉ dùng cho test, ký giao dịch từ các tài khoản tất định, chạy cùng một block qua executor của Pluto và go-ethereum, rồi báo giao dịch đầu tiên có kết quả khác nhau.
+## Harness là gì?
 
-## Các loại tải kiểm thử
+Harness là bộ khung dựng dữ liệu thử nghiệm và chạy cùng một workload qua nhiều bộ thực thi. Trong thư mục này, workload thường được chạy trên:
 
-- Tập tài khoản tất định và workload chuyển tiền đã ký, có thể đặt tỷ lệ ví gửi thường xuyên.
-- Triển khai Counter, tăng biến đếm, tạo xung đột storage và gọi hợp đồng qua hợp đồng khác.
-- Triển khai ERC-20 và gọi `transfer`.
-- Một AMM tích số không đổi đơn giản, có thể chạy lại các lệnh `swap(uint256)`.
-- Giao dịch revert, hết gas và sai nonce.
-- Block trộn nhiều loại giao dịch với seed cố định, gồm 10.000 giao dịch.
+- **Pluto tuần tự**: xử lý giao dịch lần lượt theo thứ tự trong block.
+- **Pluto song song**: thử xử lý đồng thời, kiểm tra xung đột rồi chạy lại khi cần.
+- **Geth tham chiếu**: dùng EVM và state trong bộ nhớ của go-ethereum để đối chiếu kết quả có thể quan sát.
 
-Fixture trong `differential_workloads_test.go` mô phỏng hành vi của `contracts/SimpleAMM.sol` trực tiếp bằng EVM bytecode, nên CI không cần cài Solidity compiler. Giá trị dự trữ của fixture cũng được kiểm tra độc lập với kết quả so sánh geth.
+Các test đối chiếu kiểm tra trạng thái giao dịch, gas, log, dữ liệu trả về, số dư, nonce, code và các storage slot mà workload khai báo. Với Pluto, chúng còn so sánh state root giữa executor tuần tự và song song. State root riêng của Pluto không cùng định dạng với Ethereum Merkle Patricia Trie của geth nên không so sánh trực tiếp hai root đó.
 
-## Cách chạy
+Benchmark ở đây chủ yếu đo `ExecuteBlock` trên workload dựng sẵn. Đây không phải phép đo TPS của mạng nhiều validator: nó không tính thời gian khởi động node, RPC, truyền giao dịch qua mạng hoặc đồng thuận CometBFT.
 
-Chạy toàn bộ harness, bao gồm block 10.000 giao dịch có seed cố định:
+> Các lệnh bên dưới dùng cú pháp PowerShell và chạy từ thư mục gốc của repository.
+
+## Chạy toàn bộ test
+
+```powershell
+go test ./test/harness -count=1
+```
+
+Chạy tất cả test trong harness một lần, không dùng lại kết quả cache. Nếu muốn xem tên từng test, log và bảng báo cáo:
 
 ```powershell
 go test ./test/harness -count=1 -v
 ```
 
-Chạy riêng bài đối chiếu lớn có thể tái lập:
+Chạy test của toàn bộ project, không chỉ harness:
+
+```powershell
+go test ./... -count=1
+```
+
+Kiểm tra race condition trong toàn bộ project:
+
+```powershell
+go test -race ./... -count=1
+```
+
+Race detector tìm một số truy cập bộ nhớ đồng thời không được đồng bộ. Kết quả race sạch **không tự chứng minh** hai executor cho cùng kết quả; cần chạy thêm test đối chiếu.
+
+## Test đối chiếu tính đúng đắn
+
+### Ma trận workload
+
+```powershell
+go test ./test/harness -run '^TestAllWorkloadsMatchSequentialParallelAndGeth$' -count=1 -v
+```
+
+Chạy nhiều workload với Pluto tuần tự, Pluto song song tự điều chỉnh, Pluto song song 4 worker và geth. Các workload hiện gồm chuyển coin độc lập và qua ví nóng, Counter, nhiều ví gọi Counter, access list đúng/sai, ERC-20, AMM, gọi hợp đồng lồng nhau, revert, hết gas, nonce sai và block trộn. Test dừng và báo lỗi nếu phát hiện sai khác.
+
+### 10.000 giao dịch có seed cố định
 
 ```powershell
 go test ./test/harness -run '^TestDifferentialHarnessTenThousandSeededMixedTransactions$' -count=1 -v
 ```
 
-Chạy fuzz test của Go trong khoảng thời gian tùy chọn:
+Tạo một workload hỗn hợp 10.000 giao dịch có thể tái lập, rồi so Pluto tuần tự với Pluto song song 4 worker và geth. Seed cố định giúp dựng lại đúng workload khi tìm lỗi. Đây là một kịch bản lớn có thể lặp lại, không phải chứng minh mọi loại giao dịch EVM đều đúng.
+
+### Các bài đối chiếu riêng
 
 ```powershell
-go test ./test/harness -run '^$' -fuzz '^FuzzDifferentialHarnessSeededMixedBlocks$' -fuzztime=5m
+go test ./test/harness -run '^(TestDifferentialHarnessCounterWorkloadMatchesGeth|TestDifferentialHarnessComparesPlutoExecutorsAndStateRoot|TestDifferentialHarnessParallelStaticTransfersMatchSequentialAndGeth|TestDifferentialHarnessParallelFullyReplaysAfterValidationFailure|TestDifferentialHarnessParallelStaticTransferFailuresMatch|TestDifferentialHarnessERC20MatchesGeth|TestDifferentialHarnessCounterContentionMatchesGeth|TestDifferentialHarnessNestedCallMatchesGeth|TestDifferentialHarnessConstantProductAMMMatchesGeth|TestDifferentialHarnessFailureModesMatchGeth)$' -count=1 -v
 ```
 
-Đo benchmark các loại tải chuyển tiền, ví nóng, Counter, ERC-20 và AMM:
+Nhóm này kiểm tra các workload nhỏ, riêng biệt để khi lỗi xuất hiện dễ khoanh vùng hơn: Counter, chuyển khoản, replay sau xung đột, ERC-20, AMM, lời gọi lồng nhau và các trường hợp lỗi.
+
+### Test chính sách checkpoint
 
 ```powershell
-go test ./test/harness -run '^$' -bench '^BenchmarkDifferentialWorkloads$' -benchmem -count=1
+go test ./test/harness -run '^(TestCheckpointPoliciesMatchSequentialAndGethAcrossWorkloads|TestCheckpointPoliciesConcurrentSeededWorkload|TestCheckpointPolicyCSVExport)$' -count=1 -v
 ```
 
-Tên mỗi workload được tạo sẽ có seed đi kèm. Khi gặp lỗi, harness in seed và block/giao dịch đầu tiên bị lệch. Go cũng lưu các lỗi fuzz đã được rút gọn trong `test/harness/testdata/fuzz/` để chạy lại.
+So sánh các chính sách checkpoint P0, P1, P2 theo chu kỳ và P3 thích nghi với executor tuần tự và geth trên workload đã chọn. Nhóm này kiểm tra tính đúng đắn và số liệu checkpoint; nó không mặc định checkpoint sẽ nhanh hơn.
 
-## Quy tắc đối chiếu
-
-Harness so sánh tính hợp lệ/trạng thái giao dịch, gas, dữ liệu trả về, log, số dư, nonce, runtime code và các storage slot đã khai báo. Các executor của Pluto cũng được so sánh với nhau, bao gồm state root tất định của Pluto. geth tạo state root theo Ethereum Merkle Patricia Trie, còn Pluto hiện dùng application hash riêng; vì vậy hai loại root này không được xem là cùng định dạng. Với geth, harness so sánh trạng thái tài khoản và hợp đồng có thể quan sát được.
-
-`compareAllExecutors` nhận mọi implementation của `evm.Executor`, rồi chạy cùng workload trên geth, Pluto tuần tự và Pluto song song. Harness so kết quả giao dịch, trạng thái tài khoản/hợp đồng và state root Pluto. Executor song song chạy giao dịch EVM trên overlay riêng, xác thực rồi chấp nhận theo `TxIndex`; nếu kết quả dựa trên phiên bản cũ, nó hủy lần chạy đó và thực thi lại giao dịch trên state mới nhất. Các block chỉ gồm chuyển EOA tĩnh đủ điều kiện dùng đường xử lý S ít cấp phát hơn. P vẫn tắt cho đến khi có artifact được chứng nhận.
-
-So sánh engine tuần tự với engine song song dùng 1, 2, 4 và 8 worker trên block có 128, 512 và 1.024 giao dịch chuyển tiền không xung đột:
+### Test harness có bắt được lỗi cố ý không?
 
 ```powershell
-go test ./test/harness -run '^$' -bench '^BenchmarkSequentialVsParallelIndependentTransfers$' -benchtime=30x -benchmem -count=3
+go test ./test/harness -run '^TestHarnessDetectsInjectedMutations$' -count=1 -v
 ```
 
-## M5 checkpoint policy matrix
+Đưa một số sai lệch giả lập vào kết quả để xác nhận harness phát hiện được. Đây là test cho khả năng phát hiện lỗi của bộ đối chiếu, không phải test hiệu năng.
 
-The M5 differential matrix runs each deterministic workload with the sequential
-executor and parallel P0, P1, P2 (`N=100` and `N=1000`), and P3 configurations, then compares
-all results with go-ethereum. It covers transaction status, gas, return data,
-logs, synthesized receipt consensus fields, balances, nonces, code, declared
-storage slots, a shared observed-state root against geth, and Pluto's native
-final block state root across all Pluto executors.
+## Báo cáo hiệu năng có bảng dễ đọc
 
-Run the policy matrix and its concurrent seeded workload under the race detector:
-
-```powershell
-$env:CGO_ENABLED='1'
-go test -race -count=1 ./test/harness -run 'TestCheckpointPolicies'
-```
-
-Thời gian tạo Pebble và nạp trạng thái ban đầu không tính vào thời gian benchmark; mỗi lượt vẫn bắt đầu từ trạng thái mới. Đây là benchmark chẩn đoán trên máy cục bộ, không phải bằng chứng rằng toàn bộ EVM đã tăng tốc. Khi chia sẻ kết quả, hãy ghi lại máy, phiên bản Go, số worker, seed và workload.
-
-`mutation_test.go` chứa các executor kiểm thử được cố ý viết sai. Các test xác nhận bộ so sánh phát hiện được giao dịch không hợp lệ bị chấp nhận và giá trị storage bị commit sai. Những executor lỗi này chỉ dùng trong test, không sửa executor production.
-# Checkpoint policy metrics (M5.5)
-
-Run the five policies on the same deterministic high-conflict workload and
-write one stable CSV row per policy from PowerShell:
-
-```powershell
-$env:PLUTO_CHECKPOINT_CSV = Join-Path (Get-Location) "checkpoint-metrics.csv"
-go test ./test/harness -run '^TestCheckpointPolicyCSVExport$' -count=1 -v
-Remove-Item Env:PLUTO_CHECKPOINT_CSV
-```
-
-Run the Go benchmark separately:
-
-```powershell
-go test ./test/harness -run '^$' -bench '^BenchmarkCheckpointPoliciesCSV$' -benchtime=1x -count=1
-```
-
-Replay duration is observational only. Policy selection remains based solely
-on deterministic opcode/read/conflict inputs. The production adapter resumes
-top-level geth frames from captured PC/stack/memory/gas state. Unsupported
-boundaries, such as contract creation and Verkle/EIP-4762 execution, are
-reported as safe P0 full fallbacks.
-
-## Báo cáo dễ đọc: executor tuần tự và song song
-
-Chạy bài sau để tự in bảng so sánh cho 128, 512 và 1.024 giao dịch, với
-executor song song dùng 1, 2, 4 và 8 worker:
+### Chuyển coin độc lập
 
 ```powershell
 go test ./test/harness -run '^TestSequentialParallelPerformanceReport$' -count=1 -v
 ```
 
-Bài kiểm tra chạy cùng workload tất định qua executor tuần tự, các cấu hình
-song song và geth. Nếu trạng thái tài khoản, nonce, code, storage, kết quả giao
-dịch, gas, log, receipt hoặc state root Pluto khác nhau, test sẽ thất bại và in
-ra điểm khác đầu tiên. Báo cáo dùng trung vị của nhiều lần đo; cột ổn định cảnh
-báo khi độ dao động vượt 10%.
+In bảng so sánh Pluto tuần tự, song song tự điều chỉnh và song song 1/2/4/8 worker ở quy mô 128, 512 và 1.024 giao dịch mỗi block. Báo cáo có thời gian trung vị, throughput ước tính trong executor, chênh lệch so với tuần tự, bộ nhớ cấp phát, số lần cấp phát, worker thực dùng, abort/retry và kết quả đối chiếu.
 
-Đây là phép đo `ExecuteBlock` tại executor. Thời gian tạo node, RPC, nạp state
-và khởi động mạng không nằm trong phép đo; số byte cấp phát cũng không phải RAM
-đỉnh. Vì vậy hãy dùng kết quả để so sánh engine trên đúng workload này, không
-diễn giải trực tiếp thành TPS của cả mạng.
+Test đo 5 mẫu, mỗi mẫu chạy 5 block; mỗi mẫu đều được kiểm tra tính đúng đắn. Nếu báo cáo cảnh báo số đo dao động trên 10%, hãy chạy lại khi máy ít tải. Không diễn giải throughput trong bảng thành TPS của mạng thật.
+
+Lưu toàn bộ đầu ra vào tệp trong PowerShell:
+
+```powershell
+go test ./test/harness -run '^TestSequentialParallelPerformanceReport$' -count=1 -v 2>&1 | Tee-Object -FilePath .\comparison-report.txt
+```
+
+### Nhiều giao dịch cùng gọi một hợp đồng
+
+```powershell
+go test ./test/harness -run '^TestContractContentionSequentialParallelReport$' -count=1 -v
+```
+
+So sánh tuần tự và các cấu hình song song khi nhiều giao dịch tranh chấp cùng hợp đồng/ô trạng thái Counter. Trường hợp này giúp thấy chi phí xung đột, abort và chạy lại; nó có thể chậm hơn tuần tự.
+
+### Cùng hợp đồng, access list đúng hoặc sai
+
+```powershell
+go test ./test/harness -run '^(TestAccessListContractContentionSequentialParallelReport|TestIncorrectAccessListContractContentionSequentialParallelReport)$' -count=1 -v
+```
+
+Chạy riêng trường hợp access list đúng và khai báo sai. Báo cáo đối chiếu kết quả với tuần tự/geth và hiển thị lựa chọn lập lịch cùng chi phí gas. Access list là dữ liệu do giao dịch cung cấp; danh sách sai không được xem là bằng chứng rằng EVM đã truy cập đúng các slot đó.
+
+### Cùng hợp đồng nhưng ghi các ô storage khác nhau
+
+```powershell
+go test ./test/harness -run '^TestSameContractDisjointAccessListSequentialParallelReport$' -count=1 -v
+```
+
+Đây là trường hợp có khả năng tận dụng song song hơn: các giao dịch gọi cùng một hợp đồng nhưng làm việc trên các storage slot tách biệt. Test so kết quả cuối với tuần tự/geth và in số đo cho các mức giao dịch, worker. Kết quả nhanh hơn chỉ áp dụng cho workload và máy đã đo.
+
+## Benchmark chi tiết của Go
+
+Benchmark độc lập cho workload chuyển coin, so tuần tự với 1/2/4/8 worker:
+
+```powershell
+go test ./test/harness -run '^$' -bench '^BenchmarkSequentialVsParallelIndependentTransfers$' -benchtime=30x -benchmem -count=3
+```
+
+`-run '^$'` bỏ qua các test thường; `-bench` chọn benchmark; `-benchtime=30x` chạy mỗi biến thể 30 lần; `-benchmem` in bộ nhớ cấp phát và số lần cấp phát; `-count=3` lặp lại benchmark ba lượt. Các dòng `sequential` là mốc tuần tự; so chúng với `parallel-workers-1`, `-2`, `-4` và `-8` trong cùng quy mô `tx-128`, `tx-512` hoặc `tx-1024`.
+
+Benchmark workload đa dạng, phần lớn chỉ đo executor tuần tự:
+
+```powershell
+go test ./test/harness -run '^$' -bench '^BenchmarkDifferentialWorkloads$' -benchtime=10x -benchmem
+```
+
+Benchmark các chính sách checkpoint:
+
+```powershell
+go test ./test/harness -run '^$' -bench '^BenchmarkCheckpointPoliciesCSV$' -benchtime=10x -benchmem
+```
+
+Các trường thường gặp trong kết quả Go:
+
+- `ns/op`: thời gian cho một lần chạy; số nhỏ hơn thường nhanh hơn.
+- `B/op`: byte được cấp phát trong một lần chạy; đây không phải RAM đỉnh của tiến trình.
+- `allocs/op`: số lần cấp phát trong một lần chạy.
+- Các số liệu như `aborts/op`, `retries/op`, `checkpoint-B/op`: metric bổ sung do benchmark báo cáo.
+
+Benchmark Go in nhiều dòng kỹ thuật; dùng các bài `...Report` phía trên nếu cần bảng tổng hợp dễ đọc. Khi so tốc độ, so đúng cùng số giao dịch và cùng workload; đừng kết luận từ một lần chạy ngắn hoặc một máy đang tải cao.
+
+## Fuzz test
+
+Chạy fuzz trong 15 giây, một worker fuzz để giảm tải và giúp kết quả dễ tái lập hơn:
+
+```powershell
+go test ./test/harness -run '^$' -fuzz '^FuzzDifferentialHarnessSeededMixedBlocks$' -fuzztime=15s -parallel=1
+```
+
+Fuzzer thay seed để sinh nhiều block trộn; mỗi trường hợp được đối chiếu với các executor tham chiếu. Có thể tăng thời gian, ví dụ `-fuzztime=2m`, để tìm thêm trường hợp. Nếu Go tìm thấy lỗi, nó lưu đầu vào tái hiện trong thư mục testdata của package.
+
+## Xuất số liệu checkpoint ra CSV
+
+Test CSV xác nhận các chính sách checkpoint có số liệu hợp lệ và mặc định in CSV vào log test:
+
+```powershell
+go test ./test/harness -run '^TestCheckpointPolicyCSVExport$' -count=1 -v
+```
+
+Để lưu riêng CSV vào tệp:
+
+```powershell
+$env:PLUTO_CHECKPOINT_CSV = '.\checkpoint-metrics.csv'
+go test ./test/harness -run '^TestCheckpointPolicyCSVExport$' -count=1 -v
+Remove-Item Env:PLUTO_CHECKPOINT_CSV
+```
+
+Tệp CSV ghi metric của P0/P1/P2/P3 trên cùng workload. P0 là mốc không checkpoint. So sánh cả thời gian chạy lại, số checkpoint tạo/dùng lại và bộ nhớ checkpoint; ít opcode chạy lại hơn chưa chắc tổng thời gian thấp hơn.
+
+## Chọn lệnh theo mục tiêu
+
+| Muốn biết | Chạy lệnh |
+| --- | --- |
+| Toàn bộ harness còn đúng không | `go test ./test/harness -count=1` |
+| Pluto tuần tự/song song/geth có khớp trên nhiều loại tải không | `TestAllWorkloadsMatchSequentialParallelAndGeth` hoặc test 10.000 giao dịch |
+| Có bảng hiệu năng tuần tự và song song dễ đọc | `TestSequentialParallelPerformanceReport` |
+| Tranh chấp cùng Counter tốn chi phí thế nào | `TestContractContentionSequentialParallelReport` |
+| Access list đúng/sai ảnh hưởng ra sao | Hai test `AccessList...Report` |
+| Gọi cùng hợp đồng nhưng ghi slot riêng có lợi không | `TestSameContractDisjointAccessListSequentialParallelReport` |
+| Benchmark Go chi tiết, có bộ nhớ | `BenchmarkSequentialVsParallelIndependentTransfers` |
+| Các policy checkpoint dùng tài nguyên thế nào | `TestCheckpointPolicyCSVExport` hoặc `BenchmarkCheckpointPoliciesCSV` |
+| Tìm workload sai khác theo seed ngẫu nhiên | `FuzzDifferentialHarnessSeededMixedBlocks` |
+| Harness có phát hiện lỗi chèn thử không | `TestHarnessDetectsInjectedMutations` |
+
+Các tên test có thể chạy riêng bằng mẫu:
+
+```powershell
+go test ./test/harness -run '^TEN_TEST$' -count=1 -v
+```
+
+Thay `TEN_TEST` bằng tên test đầy đủ trong bảng hoặc danh sách ở trên.

@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/tracing"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
 )
 
@@ -84,6 +85,13 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 	if env.BaseFee == nil {
 		env.BaseFee = new(big.Int)
 	}
+	workers := e.Workers
+	if workers < 1 {
+		workers = runtime.GOMAXPROCS(0)
+	}
+	if workers < 1 {
+		workers = 1
+	}
 	// Giữ đường xử lý chuyển khoản đã được chứng nhận, ít cấp phát cho các khối
 	// chỉ gồm giao dịch S không xung đột. Giao dịch EVM thông thường dùng các lần
 	// chạy lạc quan cô lập ở bên dưới.
@@ -102,17 +110,46 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 	if allStatic {
 		result, err := e.executeStaticBlock(base, env, txs, staticAccesses)
 		if err == nil {
+			e.saveAdaptiveWorkerCount(workers)
 			result.Metrics["phase_analyze_ns"] = float64(preAnalyzeNS)
 			result.Metrics["phase_total_ns"] += float64(preAnalyzeNS)
 		}
 		return result, err
 	}
-	workers := e.Workers
-	if workers < 1 {
-		workers = runtime.GOMAXPROCS(0)
-	}
-	if workers < 1 {
-		workers = 1
+	// Với executor tự điều chỉnh, tránh chạy đầu cơ một lô gọi cùng contract
+	// khi không có access list phân biệt các storage slot. Đây là gợi ý bảo thủ:
+	// nếu slot khai báo khác nhau thì vẫn thử song song; mọi lần chạy song song
+	// tiếp tục được xác thực bằng tập đọc động ở dưới.
+	if e.AutoWorkers {
+		planStart := time.Now()
+		serialContractBatch := shouldSeriallyScheduleContractBatch(stateDB, e.ChainID, txs)
+		preAnalyzeNS += time.Since(planStart).Nanoseconds()
+		if serialContractBatch {
+			result, err := NewSequentialExecutor(e.ChainConfig, e.ChainID).ExecuteBlock(stateDB, env, txs)
+			if err != nil {
+				return nil, fmt.Errorf("adaptive serial fallback for contract contention: %w", err)
+			}
+			if result.Metrics == nil {
+				result.Metrics = make(map[string]float64)
+			}
+			var workerStats workerUsage
+			workerStats.add(1)
+			result.Metrics["tx_total"] = float64(len(txs))
+			result.Metrics["tx_class_s"] = 0
+			result.Metrics["tx_class_p"] = 0
+			result.Metrics["tx_class_o"] = float64(len(txs))
+			result.Metrics["worker_count"] = float64(workers)
+			workerStats.record(result.Metrics, true)
+			result.Metrics["tx_parallel"] = 0
+			result.Metrics["incarnation_total"] = float64(len(txs))
+			result.Metrics["abort_total"] = 0
+			result.Metrics["retry_total"] = 0
+			result.Metrics["parallel_auto_serial_fallback"] = 1
+			result.Metrics["phase_analyze_ns"] = float64(preAnalyzeNS)
+			result.Metrics["phase_total_ns"] = float64(time.Since(totalStarted).Nanoseconds())
+			e.saveAdaptiveWorkerCount(1)
+			return result, nil
+		}
 	}
 	result := &BlockResult{Results: make([]TxResult, len(txs)), Writes: make(map[string][]byte), Metrics: make(map[string]float64)}
 	var checkpointMetrics CheckpointMetrics
@@ -121,14 +158,21 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 	remainingGas := env.GasLimit
 	analyzeNS, executeNS, validateNS, resolveNS := preAnalyzeNS, int64(0), int64(0), int64(0)
 	var aborts, retries, parallelTxs, staticTxs, opaqueTxs float64
+	var workerStats workerUsage
 
 	// Chia thành các đợt có giới hạn để giảm bộ nhớ đầu cơ, đồng thời giữ đủ giao
 	// dịch độc lập đang chạy nhằm bù chi phí điều phối worker.
-	waveSize := workers * 8
+	activeWorkers := e.startingWorkerCount(workers)
+	waveMultiplier := 8
+	if e.AutoWorkers {
+		// Đợt ngắn hơn giúp bộ điều khiển sớm quan sát xung đột và điều chỉnh.
+		waveMultiplier = 4
+	}
+	waveSize := workers * waveMultiplier
 	if waveSize < workers || waveSize < 1 { // Ngăn phép nhân gây tràn số.
 		waveSize = workers
 	}
-	for start := 0; start < len(txs); start += waveSize {
+	for start := 0; start < len(txs); {
 		end := start + waveSize
 		if end > len(txs) {
 			end = len(txs)
@@ -146,10 +190,11 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 			analyzeNS += time.Since(analyzeStart).Nanoseconds()
 		}
 
-		workerCount := workers
+		workerCount := activeWorkers
 		if workerCount > len(wave) {
 			workerCount = len(wave)
 		}
+		workerStats.add(workerCount)
 		type job struct{ index int }
 		jobs := make(chan job)
 		var wg sync.WaitGroup
@@ -181,6 +226,7 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 
 		// Bộ phân giải là nơi duy nhất ghi vào StateDB chuẩn và luôn xử lý theo
 		// thứ tự ban đầu trong khối, bất kể worker hoàn tất theo thứ tự nào.
+		waveConflicts := 0
 		for i, speculative := range attempts {
 			tx := wave[i]
 			if speculative == nil {
@@ -192,8 +238,10 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 				mustRetry = true
 			}
 			validateStart := time.Now()
-			if !versions.Validate(speculative.readVersion) {
+			versionConflict := !versions.Validate(speculative.readVersion)
+			if versionConflict {
 				mustRetry = true
+				waveConflicts++
 			}
 			validateNS += time.Since(validateStart).Nanoseconds()
 			accepted := speculative
@@ -259,6 +307,14 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 			remainingGas -= accepted.result.GasUsed
 			result.GasUsed += accepted.result.GasUsed
 		}
+		start = end
+		if e.AutoWorkers {
+			activeWorkers = adaptWorkerCount(activeWorkers, workers, waveConflicts, len(wave))
+			waveSize = activeWorkers * waveMultiplier
+			if waveSize < activeWorkers || waveSize < 1 {
+				waveSize = activeWorkers
+			}
+		}
 	}
 
 	prepareStart := time.Now()
@@ -274,6 +330,7 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 	result.Metrics["tx_class_p"] = 0
 	result.Metrics["tx_class_o"] = opaqueTxs
 	result.Metrics["worker_count"] = float64(workers)
+	workerStats.record(result.Metrics, e.AutoWorkers)
 	result.Metrics["tx_parallel"] = parallelTxs
 	result.Metrics["incarnation_total"] = float64(len(txs)) + retries
 	result.Metrics["abort_total"] = aborts
@@ -293,7 +350,65 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 	result.Metrics["checkpoint_resume_total"] = float64(checkpointMetrics.Resumes)
 	result.Metrics["checkpoint_full_fallback_total"] = float64(checkpointMetrics.FullFallbacks)
 	result.CheckpointMetrics = checkpointMetrics
+	e.saveAdaptiveWorkerCount(activeWorkers)
 	return result, nil
+}
+
+// shouldSeriallyScheduleContractBatch nhận diện một lô có nhiều giao dịch gọi
+// cùng contract nhưng thiếu access list đủ để tách các slot. Chỉ dùng làm gợi ý
+// lập lịch; không dùng để giả định tính đúng đắn của giao dịch.
+func shouldSeriallyScheduleContractBatch(state *PebbleStateDB, chainID *big.Int, txs []*types.Transaction) bool {
+	if state == nil || chainID == nil || len(txs) < 2 || txs[0] == nil {
+		return false
+	}
+	contract := common.Address{}
+	firstCall := 0
+	if txs[0].To() == nil {
+		// A deployment followed by calls in the same block has no code in the
+		// pre-block state yet. Derive its address from the signed creator and nonce.
+		signer := types.LatestSignerForChainID(chainID)
+		creator, err := types.Sender(signer, txs[0])
+		if err != nil {
+			return false
+		}
+		contract = crypto.CreateAddress(creator, txs[0].Nonce())
+		firstCall = 1
+	} else {
+		contract = *txs[0].To()
+		if len(state.Code(contract)) == 0 {
+			return false
+		}
+	}
+	if len(txs)-firstCall < 2 {
+		return false
+	}
+
+	seenSlots := make(map[MVKey]struct{})
+	allHaveDistinctSlotHints := true
+	sharedSlot := false
+	for _, tx := range txs[firstCall:] {
+		if tx == nil || tx.To() == nil || *tx.To() != contract {
+			return false
+		}
+		accessList := tx.AccessList()
+		foundSlot := false
+		for _, tuple := range accessList {
+			for _, slot := range tuple.StorageKeys {
+				foundSlot = true
+				key := MVKey{Address: tuple.Address, Kind: MVStorage, Slot: slot}
+				if _, exists := seenSlots[key]; exists {
+					sharedSlot = true
+				}
+				seenSlots[key] = struct{}{}
+			}
+		}
+		if !foundSlot {
+			allHaveDistinctSlotHints = false
+		}
+	}
+	// No list, incomplete lists, and overlapping hints all indicate a likely
+	// hotspot. Different complete slot hints retain optimistic parallelism.
+	return !allHaveDistinctSlotHints || sharedSlot
 }
 
 func recordAttemptCheckpoints(metrics *CheckpointMetrics, attempt *optimisticAttempt) {
