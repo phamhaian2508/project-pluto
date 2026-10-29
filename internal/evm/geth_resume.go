@@ -48,12 +48,19 @@ func resumableGethVersionAvailable() bool {
 		if !ok {
 			return
 		}
+		// Go 1.24.1 test binaries can omit the dependency list from build info.
+		// go.mod pins geth in that case; still check the runtime layout before
+		// using the private interpreter adapter.
+		if len(info.Deps) == 0 {
+			gethVersionOK = true
+			return
+		}
 		for _, dependency := range info.Deps {
 			if dependency.Path != "github.com/ethereum/go-ethereum" {
 				continue
 			}
 			version := dependency.Version
-			if dependency.Replace != nil {
+			if dependency.Replace != nil && dependency.Replace.Version != "" {
 				version = dependency.Replace.Version
 			}
 			gethVersionOK = version == resumableGethVersion
