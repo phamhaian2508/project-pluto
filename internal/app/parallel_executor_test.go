@@ -38,7 +38,7 @@ func TestParallelExecutorAppCommitPersistsStaticTransfers(t *testing.T) {
 		}
 		keys[i] = crypto.FromECDSA(key)
 		senders[i] = crypto.PubkeyToAddress(key.PublicKey)
-		seed.AddBalanceBig(senders[i], big.NewInt(10))
+		seed.AddBalanceBig(senders[i], big.NewInt(1_000_000_000_000_000_000))
 	}
 	if err := seed.Commit(); err != nil {
 		t.Fatal(err)
@@ -51,7 +51,7 @@ func TestParallelExecutorAppCommitPersistsStaticTransfers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tx := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: new(big.Int), Gas: 21_000, To: &recipients[i], Value: big.NewInt(3)})
+		tx := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: testGasPrice(), Gas: 21_000, To: &recipients[i], Value: big.NewInt(3)})
 		txs[i], err = types.SignTx(tx, types.LatestSignerForChainID(chainID), key)
 		if err != nil {
 			t.Fatal(err)
@@ -64,8 +64,9 @@ func TestParallelExecutorAppCommitPersistsStaticTransfers(t *testing.T) {
 		}
 	}
 	for _, addr := range senders {
-		if got := evm.NewPebbleStateDB(application.db).GetBalance(addr); got.Cmp(uint256.NewInt(7)) != 0 {
-			t.Fatalf("sender %s balance = %s, want 7", addr, got)
+		want := new(big.Int).Sub(big.NewInt(1_000_000_000_000_000_000), big.NewInt(21_000_000_000_003))
+		if got := evm.NewPebbleStateDB(application.db).GetBalance(addr).ToBig(); got.Cmp(want) != 0 {
+			t.Fatalf("sender %s balance = %s, want %s after transfer and gas fee", addr, got, want)
 		}
 	}
 	for _, addr := range recipients {
