@@ -51,7 +51,7 @@ func signedTx(t *testing.T, keyHex string, nonce, gas uint64, to *common.Address
 	if err != nil {
 		t.Fatal(err)
 	}
-	tx := types.NewTx(&types.LegacyTx{Nonce: nonce, GasPrice: new(big.Int), Gas: gas, To: to, Value: value, Data: data})
+	tx := types.NewTx(&types.LegacyTx{Nonce: nonce, GasPrice: testGasPrice(), Gas: gas, To: to, Value: value, Data: data})
 	tx, err = types.SignTx(tx, types.LatestSignerForChainID(chainID), key)
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestFinalizeBlockStagesStateUntilAtomicCommit(t *testing.T) {
 	to := common.HexToAddress("0x0000000000000000000000000000000000001234")
 	tx := types.NewTx(&types.LegacyTx{
 		Nonce:    0,
-		GasPrice: new(big.Int),
+		GasPrice: testGasPrice(),
 		Gas:      21000,
 		To:       &to,
 		Value:    big.NewInt(5),
@@ -163,7 +163,7 @@ func TestCommitStoresEthereumBlockTransactionReceiptLogsAndLocation(t *testing.T
 
 	tx := types.NewTx(&types.LegacyTx{
 		Nonce:    0,
-		GasPrice: new(big.Int),
+		GasPrice: testGasPrice(),
 		Gas:      100000,
 		To:       &contract,
 	})
@@ -336,7 +336,7 @@ func TestSequentialExecutorOutOfGasAndRevert(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := func(nonce uint64, gas uint64) *types.Transaction {
-		tx := types.NewTx(&types.LegacyTx{Nonce: nonce, GasPrice: new(big.Int), Gas: gas, To: &contract})
+		tx := types.NewTx(&types.LegacyTx{Nonce: nonce, GasPrice: testGasPrice(), Gas: gas, To: &contract})
 		signed, err := types.SignTx(tx, types.LatestSignerForChainID(chainID), key)
 		if err != nil {
 			t.Fatal(err)
@@ -367,7 +367,7 @@ func TestSequentialExecutorContractCreationAndShanghai(t *testing.T) {
 	from := crypto.PubkeyToAddress(key.PublicKey)
 	// Hàm khởi tạo trả về PUSH0/PUSH0/REVERT, chứng minh opcode Shanghai đã bật.
 	initCode := common.FromHex("0x6003600c60003960036000f35f5ffd")
-	tx := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: new(big.Int), Gas: 100000, Data: initCode})
+	tx := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: testGasPrice(), Gas: 100000, Data: initCode})
 	signed, err := types.SignTx(tx, types.LatestSignerForChainID(chainID), key)
 	if err != nil {
 		t.Fatal(err)
@@ -400,7 +400,7 @@ func TestSequentialExecutorNestedContractCall(t *testing.T) {
 	if err := state.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	tx := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: new(big.Int), Gas: 200000, To: &parent})
+	tx := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: testGasPrice(), Gas: 200000, To: &parent})
 	signed, err := types.SignTx(tx, types.LatestSignerForChainID(chainID), key)
 	if err != nil {
 		t.Fatal(err)
@@ -424,7 +424,7 @@ func TestSequentialExecutorSSTORERefundDoesNotLeakBetweenTransactions(t *testing
 	if err := state.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	clear := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: new(big.Int), Gas: 100000, To: &contract})
+	clear := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: testGasPrice(), Gas: 100000, To: &contract})
 	clear, err := types.SignTx(clear, types.LatestSignerForChainID(chainID), key)
 	if err != nil {
 		t.Fatal(err)
@@ -441,7 +441,7 @@ func TestSequentialExecutorSSTORERefundDoesNotLeakBetweenTransactions(t *testing
 	if err := state.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	set := types.NewTx(&types.LegacyTx{Nonce: 1, GasPrice: new(big.Int), Gas: 100000, To: &contract})
+	set := types.NewTx(&types.LegacyTx{Nonce: 1, GasPrice: testGasPrice(), Gas: 100000, To: &contract})
 	set, err = types.SignTx(set, types.LatestSignerForChainID(chainID), key)
 	if err != nil {
 		t.Fatal(err)
@@ -490,7 +490,7 @@ func TestCounterStorageAcrossThreeCallsAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deploy := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: new(big.Int), Gas: 3000000, Data: creation})
+	deploy := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: testGasPrice(), Gas: 3000000, Data: creation})
 	deploy, err = types.SignTx(deploy, types.LatestSignerForChainID(chainID), key)
 	if err != nil {
 		t.Fatal(err)
@@ -499,7 +499,7 @@ func TestCounterStorageAcrossThreeCallsAndRestart(t *testing.T) {
 	txs := make([]*types.Transaction, 4)
 	txs[0] = deploy
 	for i := 1; i < len(txs); i++ {
-		txs[i] = types.NewTx(&types.LegacyTx{Nonce: uint64(i), GasPrice: new(big.Int), Gas: 100000, To: &contract, Data: common.FromHex("0xd09de08a")})
+		txs[i] = types.NewTx(&types.LegacyTx{Nonce: uint64(i), GasPrice: testGasPrice(), Gas: 100000, To: &contract, Data: common.FromHex("0xd09de08a")})
 		txs[i], err = types.SignTx(txs[i], types.LatestSignerForChainID(chainID), key)
 		if err != nil {
 			t.Fatal(err)
@@ -578,7 +578,7 @@ func TestSequentialExecutorUsesDeterministicBlockContext(t *testing.T) {
 	for i, tc := range cases {
 		state.CreateAccount(tc.address)
 		state.SetCode(tc.address, common.FromHex(tc.code), 0)
-		txs[i] = types.NewTx(&types.LegacyTx{Nonce: uint64(i), GasPrice: new(big.Int), Gas: 100000, To: &tc.address})
+		txs[i] = types.NewTx(&types.LegacyTx{Nonce: uint64(i), GasPrice: testGasPrice(), Gas: 100000, To: &tc.address})
 		var err error
 		txs[i], err = types.SignTx(txs[i], types.LatestSignerForChainID(chainID), key)
 		if err != nil {

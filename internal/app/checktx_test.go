@@ -22,6 +22,10 @@ func encodeCheckTx(t *testing.T, transaction *types.Transaction) []byte {
 	return encoded
 }
 
+func testGasPrice() *big.Int {
+	return big.NewInt(1_000_000_000)
+}
+
 func signCheckTx(
 	t *testing.T,
 	key *ecdsa.PrivateKey,
@@ -35,7 +39,7 @@ func signCheckTx(
 	t.Helper()
 	transaction := types.NewTx(&types.LegacyTx{
 		Nonce:    nonce,
-		GasPrice: new(big.Int),
+		GasPrice: testGasPrice(),
 		Gas:      gas,
 		To:       to,
 		Value:    value,
@@ -84,7 +88,7 @@ func TestCheckTxRejectsInvalidTransactions(t *testing.T) {
 	invalidV := new(big.Int).Add(new(big.Int).Mul(chainID, big.NewInt(2)), big.NewInt(35))
 	invalidSignature := types.NewTx(&types.LegacyTx{
 		Nonce:    0,
-		GasPrice: new(big.Int),
+		GasPrice: testGasPrice(),
 		Gas:      21000,
 		To:       &to,
 		Value:    new(big.Int),

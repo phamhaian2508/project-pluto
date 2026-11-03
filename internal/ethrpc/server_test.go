@@ -17,6 +17,7 @@ import (
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	cmttypes "github.com/cometbft/cometbft/types"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/phamhaian2508/project-pluto/internal/app"
@@ -36,7 +37,7 @@ type rpcResponse struct {
 func TestHTTPJSONRPCReadMethods(t *testing.T) {
 	application, key, from := rpcTestApp(t)
 	to := common.HexToAddress("0x0000000000000000000000000000000000001234")
-	tx := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: new(big.Int), Gas: 21000, To: &to, Value: big.NewInt(5)})
+	tx := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: big.NewInt(1_000_000_000), Gas: 21000, To: &to, Value: big.NewInt(5)})
 	tx, err := types.SignTx(tx, types.LatestSignerForChainID(big.NewInt(plutoconfig.EVMChainID)), key)
 	if err != nil {
 		t.Fatal(err)
@@ -80,8 +81,8 @@ func TestHTTPJSONRPCReadMethods(t *testing.T) {
 				t.Fatalf("unexpected block execution metrics: %+v", metrics)
 			}
 		}},
-		{"gas price", "eth_gasPrice", []any{}, expectJSON("0x0")},
-		{"priority fee", "eth_maxPriorityFeePerGas", []any{}, expectJSON("0x0")},
+		{"gas price", "eth_gasPrice", []any{}, expectJSON(hexutil.EncodeBig(new(big.Int).Add(mustNextBaseFee(t, application), big.NewInt(1_000_000_000))))},
+		{"priority fee", "eth_maxPriorityFeePerGas", []any{}, expectJSON("0x3b9aca00")},
 		{"balance", "eth_getBalance", []any{to, "latest"}, expectJSON("0x5")},
 		{"balance by numeric block tag", "eth_getBalance", []any{to, "0x0"}, expectJSON("0x5")},
 		{"nonce", "eth_getTransactionCount", []any{from, "latest"}, expectJSON("0x1")},
@@ -282,7 +283,7 @@ func TestJSONRPCStateAndReceiptSurviveRestart(t *testing.T) {
 	if _, err := application.InitChain(context.Background(), &abci.InitChainRequest{AppStateBytes: genesis}); err != nil {
 		t.Fatal(err)
 	}
-	tx := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: new(big.Int), Gas: 21000, To: &to, Value: big.NewInt(7)})
+	tx := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: big.NewInt(1_000_000_000), Gas: 21000, To: &to, Value: big.NewInt(7)})
 	tx, err = types.SignTx(tx, types.LatestSignerForChainID(big.NewInt(plutoconfig.EVMChainID)), key)
 	if err != nil {
 		t.Fatal(err)
@@ -372,6 +373,15 @@ func rpcTestApp(t *testing.T) (*app.App, *ecdsa.PrivateKey, common.Address) {
 		t.Fatal(err)
 	}
 	return application, key, from
+}
+
+func mustNextBaseFee(t *testing.T, application *app.App) *big.Int {
+	t.Helper()
+	fee, err := application.NextBaseFeePerGas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fee
 }
 
 func rpcRequest(t *testing.T, endpoint, method string, params any) rpcResponse {
