@@ -2,6 +2,7 @@
 /docs/*
 !/docs/foundry-e2e.md
 !/docs/metamask-local-checklist.md
+!/docs/Pluto_Project_Guide_VI.docx
 /.agents
 /.vscode
 /build
@@ -27,3 +28,13 @@
 !.env.example
 
 .pluto-home/
+/.pluto-network/
+!/docs/pluto-validator-network.md
+!/scripts/setup-pluto-network.ps1
+!/scripts/start-pluto-network.ps1
+!/scripts/stop-pluto-network.ps1
+!/scripts/pluto-network-dashboard.ps1
+!/scripts/test-pluto-network.ps1
+!/scripts/compare-executors.ps1
+
+/.diag-go-cache/

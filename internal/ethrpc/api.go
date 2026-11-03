@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sort"
 
 	cmttypes "github.com/cometbft/cometbft/types"
 	"github.com/ethereum/go-ethereum/common"
@@ -19,6 +20,7 @@ import (
 )
 
 var rpcChainID = big.NewInt(plutoconfig.EVMChainID)
+var suggestedPriorityFee = new(big.Int).SetUint64(1_000_000_000) // 1 gwei
 
 type EthAPI struct {
 	app         *app.App
@@ -36,9 +38,15 @@ func (api *EthAPI) ChainId() *hexutil.Big { return (*hexutil.Big)(new(big.Int).S
 func (api *EthAPI) BlockNumber() hexutil.Uint64 {
 	return hexutil.Uint64(api.app.CurrentHeight())
 }
-func (api *EthAPI) GasPrice() *hexutil.Big { return (*hexutil.Big)(new(big.Int)) }
+func (api *EthAPI) GasPrice() *hexutil.Big {
+	baseFee, err := api.app.NextBaseFeePerGas()
+	if err != nil {
+		baseFee = new(big.Int).Set(suggestedPriorityFee)
+	}
+	return (*hexutil.Big)(new(big.Int).Add(baseFee, suggestedPriorityFee))
+}
 func (api *EthAPI) MaxPriorityFeePerGas() *hexutil.Big {
-	return (*hexutil.Big)(new(big.Int))
+	return (*hexutil.Big)(new(big.Int).Set(suggestedPriorityFee))
 }
 func (api *EthAPI) Syncing() bool              { return false }
 func (api *EthAPI) Mining() bool               { return false }
@@ -97,24 +105,118 @@ func (api *EthAPI) FeeHistory(blockCount hexutil.Uint64, newestBlock gethrpc.Blo
 	if len(rewardPercentiles) > 0 {
 		response.Reward = make([][]*hexutil.Big, count)
 	}
-	for i := uint64(0); i <= count; i++ {
+	for i := uint64(0); i < count; i++ {
 		response.BaseFee[i] = (*hexutil.Big)(new(big.Int))
-		if i == count {
-			continue
-		}
-		if block, found, err := api.app.EthereumBlockByNumber(oldest + i); err != nil {
+		block, found, err := api.app.EthereumBlockByNumber(oldest + i)
+		if err != nil {
 			return nil, err
-		} else if found && block.GasLimit > 0 {
+		}
+		if found {
+			response.BaseFee[i] = (*hexutil.Big)(baseFeeOrZero(block))
+		}
+		if found && block.GasLimit > 0 {
 			response.GasUsedRatio[i] = float64(block.GasUsed) / float64(block.GasLimit)
 		}
 		if len(rewardPercentiles) > 0 {
-			response.Reward[i] = make([]*hexutil.Big, len(rewardPercentiles))
-			for j := range response.Reward[i] {
-				response.Reward[i][j] = (*hexutil.Big)(new(big.Int))
+			rewards, err := api.blockPriorityFeePercentiles(block, found, rewardPercentiles)
+			if err != nil {
+				return nil, err
 			}
+			response.Reward[i] = rewards
 		}
 	}
+	if count > 0 {
+		next, err := api.app.BaseFeePerGasForBlock(newest + 1)
+		if err != nil {
+			return nil, err
+		}
+		response.BaseFee[count] = (*hexutil.Big)(next)
+	} else if next, err := api.app.NextBaseFeePerGas(); err == nil {
+		response.BaseFee[0] = (*hexutil.Big)(next)
+	}
 	return response, nil
+}
+
+type priorityFeeSample struct {
+	tip *big.Int
+	gas uint64
+}
+
+func (api *EthAPI) blockPriorityFeePercentiles(block *app.EthereumBlock, found bool, percentiles []float64) ([]*hexutil.Big, error) {
+	result := make([]*hexutil.Big, len(percentiles))
+	if !found || len(block.Transactions) == 0 {
+		for i := range result {
+			result[i] = (*hexutil.Big)(new(big.Int))
+		}
+		return result, nil
+	}
+	baseFee := baseFeeOrZero(block)
+	samples := make([]priorityFeeSample, 0, len(block.Transactions))
+	var totalGas uint64
+	for _, hash := range block.Transactions {
+		stored, found, err := api.app.EthereumTransactionByHash(hash)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			continue
+		}
+		tx := new(types.Transaction)
+		if err := tx.UnmarshalBinary(stored.Raw); err != nil {
+			return nil, err
+		}
+		receipt, found, err := api.app.EthereumReceiptByHash(hash)
+		if err != nil {
+			return nil, err
+		}
+		if !found || receipt.GasUsed == 0 {
+			continue
+		}
+		price := effectiveGasPrice(tx, baseFee)
+		tip := new(big.Int).Sub(price, baseFee)
+		if tip.Sign() < 0 {
+			tip.SetInt64(0)
+		}
+		samples = append(samples, priorityFeeSample{tip: tip, gas: receipt.GasUsed})
+		totalGas += receipt.GasUsed
+	}
+	sort.Slice(samples, func(i, j int) bool { return samples[i].tip.Cmp(samples[j].tip) < 0 })
+	for i, percentile := range percentiles {
+		if totalGas == 0 {
+			result[i] = (*hexutil.Big)(new(big.Int))
+			continue
+		}
+		threshold := uint64(float64(totalGas) * percentile / 100)
+		var seen uint64
+		selected := new(big.Int)
+		for _, sample := range samples {
+			seen += sample.gas
+			selected = sample.tip
+			if seen >= threshold {
+				break
+			}
+		}
+		result[i] = (*hexutil.Big)(new(big.Int).Set(selected))
+	}
+	return result, nil
+}
+
+func baseFeeOrZero(block *app.EthereumBlock) *big.Int {
+	if block == nil || block.BaseFeePerGas == nil {
+		return new(big.Int)
+	}
+	return new(big.Int).Set(block.BaseFeePerGas)
+}
+
+func effectiveGasPrice(tx *types.Transaction, baseFee *big.Int) *big.Int {
+	if tx.Type() == types.LegacyTxType || tx.Type() == types.AccessListTxType {
+		return new(big.Int).Set(tx.GasPrice())
+	}
+	price := new(big.Int).Add(baseFee, tx.GasTipCap())
+	if price.Cmp(tx.GasFeeCap()) > 0 {
+		price.Set(tx.GasFeeCap())
+	}
+	return price
 }
 
 func (api *EthAPI) GetBalance(address common.Address, block *gethrpc.BlockNumberOrHash) (*hexutil.Big, error) {
@@ -202,7 +304,22 @@ func (api *EthAPI) GetTransactionByHash(hash common.Hash) (*RPCTransaction, erro
 	if err != nil || !found {
 		return nil, err
 	}
-	return decodeRPCTransaction(stored)
+	transaction, err := decodeRPCTransaction(stored)
+	if err != nil {
+		return nil, err
+	}
+	block, found, err := api.app.EthereumBlockByNumber(stored.BlockNumber)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		var decoded types.Transaction
+		if err := decoded.UnmarshalBinary(stored.Raw); err != nil {
+			return nil, err
+		}
+		transaction.GasPrice = (*hexutil.Big)(effectiveGasPrice(&decoded, baseFeeOrZero(block)))
+	}
+	return transaction, nil
 }
 
 func (api *EthAPI) GetTransactionByBlockHashAndIndex(hash common.Hash, index hexutil.Uint64) (*RPCTransaction, error) {
@@ -238,6 +355,14 @@ func (api *EthAPI) GetTransactionReceipt(hash common.Hash) (map[string]any, erro
 	if err := decoded.UnmarshalBinary(transaction.Raw); err != nil {
 		return nil, err
 	}
+	block, found, err := api.app.EthereumBlockByNumber(receipt.BlockNumber)
+	if err != nil {
+		return nil, err
+	}
+	baseFee := new(big.Int)
+	if found {
+		baseFee = baseFeeOrZero(block)
+	}
 	var contractAddress any
 	if receipt.ContractAddress != (common.Address{}) {
 		contractAddress = receipt.ContractAddress
@@ -260,7 +385,7 @@ func (api *EthAPI) GetTransactionReceipt(hash common.Hash) (map[string]any, erro
 		"logsBloom":         receipt.LogsBloom,
 		"status":            hexutil.Uint64(receipt.Status),
 		"type":              hexutil.Uint64(decoded.Type()),
-		"effectiveGasPrice": (*hexutil.Big)(decoded.GasPrice()),
+		"effectiveGasPrice": (*hexutil.Big)(effectiveGasPrice(&decoded, baseFee)),
 	}, nil
 }
 
@@ -268,7 +393,11 @@ func (api *EthAPI) Call(_ context.Context, args TransactionArgs, block *gethrpc.
 	if err := api.requireLatest(block); err != nil {
 		return nil, err
 	}
-	result, err := api.app.Call(args.callArgs())
+	baseFee, err := api.app.CurrentBaseFeePerGas()
+	if err != nil {
+		return nil, err
+	}
+	result, err := api.app.Call(args.callArgs(baseFee))
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +411,11 @@ func (api *EthAPI) EstimateGas(_ context.Context, args TransactionArgs, block *g
 	if err := api.requireLatest(block); err != nil {
 		return 0, err
 	}
-	gas, err := api.app.EstimateGas(args.callArgs())
+	baseFee, err := api.app.CurrentBaseFeePerGas()
+	if err != nil {
+		return 0, err
+	}
+	gas, err := api.app.EstimateGas(args.callArgs(baseFee))
 	return hexutil.Uint64(gas), err
 }
 
@@ -299,7 +432,7 @@ type TransactionArgs struct {
 	AccessList           *types.AccessList `json:"accessList"`
 }
 
-func (args TransactionArgs) callArgs() app.CallArgs {
+func (args TransactionArgs) callArgs(baseFee *big.Int) app.CallArgs {
 	var from common.Address
 	if args.From != nil {
 		from = *args.From
@@ -312,7 +445,13 @@ func (args TransactionArgs) callArgs() app.CallArgs {
 	if args.GasPrice != nil {
 		gasPrice.Set((*big.Int)(args.GasPrice))
 	} else if args.MaxFeePerGas != nil {
-		gasPrice.Set((*big.Int)(args.MaxFeePerGas))
+		gasPrice.Set(baseFee)
+		if args.MaxPriorityFeePerGas != nil {
+			gasPrice.Add(gasPrice, (*big.Int)(args.MaxPriorityFeePerGas))
+		}
+		if gasPrice.Cmp((*big.Int)(args.MaxFeePerGas)) > 0 {
+			gasPrice.Set((*big.Int)(args.MaxFeePerGas))
+		}
 	}
 	value := new(big.Int)
 	if args.Value != nil {
@@ -338,22 +477,24 @@ func dataOrEmpty(data *hexutil.Bytes) *hexutil.Bytes {
 }
 
 type RPCTransaction struct {
-	BlockHash        *common.Hash    `json:"blockHash"`
-	BlockNumber      *hexutil.Uint64 `json:"blockNumber"`
-	From             common.Address  `json:"from"`
-	Gas              hexutil.Uint64  `json:"gas"`
-	GasPrice         *hexutil.Big    `json:"gasPrice"`
-	Hash             common.Hash     `json:"hash"`
-	Input            hexutil.Bytes   `json:"input"`
-	Nonce            hexutil.Uint64  `json:"nonce"`
-	To               *common.Address `json:"to"`
-	TransactionIndex *hexutil.Uint64 `json:"transactionIndex"`
-	Value            *hexutil.Big    `json:"value"`
-	Type             hexutil.Uint64  `json:"type"`
-	ChainID          *hexutil.Big    `json:"chainId,omitempty"`
-	V                *hexutil.Big    `json:"v"`
-	R                *hexutil.Big    `json:"r"`
-	S                *hexutil.Big    `json:"s"`
+	BlockHash            *common.Hash    `json:"blockHash"`
+	BlockNumber          *hexutil.Uint64 `json:"blockNumber"`
+	From                 common.Address  `json:"from"`
+	Gas                  hexutil.Uint64  `json:"gas"`
+	GasPrice             *hexutil.Big    `json:"gasPrice"`
+	MaxFeePerGas         *hexutil.Big    `json:"maxFeePerGas,omitempty"`
+	MaxPriorityFeePerGas *hexutil.Big    `json:"maxPriorityFeePerGas,omitempty"`
+	Hash                 common.Hash     `json:"hash"`
+	Input                hexutil.Bytes   `json:"input"`
+	Nonce                hexutil.Uint64  `json:"nonce"`
+	To                   *common.Address `json:"to"`
+	TransactionIndex     *hexutil.Uint64 `json:"transactionIndex"`
+	Value                *hexutil.Big    `json:"value"`
+	Type                 hexutil.Uint64  `json:"type"`
+	ChainID              *hexutil.Big    `json:"chainId,omitempty"`
+	V                    *hexutil.Big    `json:"v"`
+	R                    *hexutil.Big    `json:"r"`
+	S                    *hexutil.Big    `json:"s"`
 }
 
 func decodeRPCTransaction(stored *app.EthereumTransaction) (*RPCTransaction, error) {
@@ -369,13 +510,18 @@ func decodeRPCTransaction(stored *app.EthereumTransaction) (*RPCTransaction, err
 	blockNumber := hexutil.Uint64(stored.BlockNumber)
 	index := hexutil.Uint64(stored.TransactionIndex)
 	blockHash := stored.BlockHash
-	return &RPCTransaction{
+	result := &RPCTransaction{
 		BlockHash: &blockHash, BlockNumber: &blockNumber, TransactionIndex: &index,
 		From: from, Gas: hexutil.Uint64(transaction.Gas()), GasPrice: (*hexutil.Big)(transaction.GasPrice()),
 		Hash: transaction.Hash(), Input: transaction.Data(), Nonce: hexutil.Uint64(transaction.Nonce()),
 		To: transaction.To(), Value: (*hexutil.Big)(transaction.Value()), Type: hexutil.Uint64(transaction.Type()),
 		ChainID: (*hexutil.Big)(transaction.ChainId()), V: (*hexutil.Big)(v), R: (*hexutil.Big)(r), S: (*hexutil.Big)(s),
-	}, nil
+	}
+	if transaction.Type() != types.LegacyTxType && transaction.Type() != types.AccessListTxType {
+		result.MaxFeePerGas = (*hexutil.Big)(transaction.GasFeeCap())
+		result.MaxPriorityFeePerGas = (*hexutil.Big)(transaction.GasTipCap())
+	}
+	return result, nil
 }
 
 func (api *EthAPI) rpcBlock(block *app.EthereumBlock, fullTransactions bool) (map[string]any, error) {
@@ -400,7 +546,7 @@ func (api *EthAPI) rpcBlock(block *app.EthereumBlock, fullTransactions bool) (ma
 		"miner":   block.Coinbase, "difficulty": (*hexutil.Big)(new(big.Int)), "totalDifficulty": (*hexutil.Big)(new(big.Int)),
 		"extraData": hexutil.Bytes{}, "size": hexutil.Uint64(0), "gasLimit": hexutil.Uint64(block.GasLimit),
 		"gasUsed": hexutil.Uint64(block.GasUsed), "timestamp": hexutil.Uint64(block.Timestamp),
-		"transactions": transactions, "uncles": []common.Hash{}, "baseFeePerGas": (*hexutil.Big)(new(big.Int)),
+		"transactions": transactions, "uncles": []common.Hash{}, "baseFeePerGas": (*hexutil.Big)(baseFeeOrZero(block)),
 	}, nil
 }
 

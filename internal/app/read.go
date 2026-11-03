@@ -19,6 +19,16 @@ func (app *App) CurrentAppHash() common.Hash {
 	return common.BytesToHash(app.appHash)
 }
 
+// ExecutionMetricsAtHeight returns execution metrics embedded in a committed block.
+func (app *App) ExecutionMetricsAtHeight(height uint64) (*BlockExecutionMetrics, bool, error) {
+	block, found, err := app.EthereumBlockByNumber(height)
+	if err != nil || !found {
+		return nil, found, err
+	}
+	metrics := block.Execution
+	return &metrics, true, nil
+}
+
 func (app *App) Balance(address common.Address) *big.Int {
 	return evm.NewPebbleStateDB(app.db).GetBalance(address).ToBig()
 }

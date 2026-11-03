@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"strconv"
 
 	abci "github.com/cometbft/cometbft/abci/types"
@@ -14,16 +15,29 @@ import (
 
 // EthereumBlock lưu siêu dữ liệu của khối đã chốt theo định dạng phía Ethereum.
 type EthereumBlock struct {
-	Number       uint64         `json:"number"`
-	Hash         common.Hash    `json:"hash"`
-	ParentHash   common.Hash    `json:"parentHash"`
-	Timestamp    uint64         `json:"timestamp"`
-	Coinbase     common.Address `json:"coinbase"`
-	GasLimit     uint64         `json:"gasLimit"`
-	GasUsed      uint64         `json:"gasUsed"`
-	StateRoot    common.Hash    `json:"stateRoot"`
-	LogsBloom    types.Bloom    `json:"logsBloom"`
-	Transactions []common.Hash  `json:"transactions"`
+	Number        uint64                `json:"number"`
+	Hash          common.Hash           `json:"hash"`
+	ParentHash    common.Hash           `json:"parentHash"`
+	Timestamp     uint64                `json:"timestamp"`
+	Coinbase      common.Address        `json:"coinbase"`
+	GasLimit      uint64                `json:"gasLimit"`
+	GasUsed       uint64                `json:"gasUsed"`
+	BaseFeePerGas *big.Int              `json:"baseFeePerGas,omitempty"`
+	StateRoot     common.Hash           `json:"stateRoot"`
+	LogsBloom     types.Bloom           `json:"logsBloom"`
+	Transactions  []common.Hash         `json:"transactions"`
+	Execution     BlockExecutionMetrics `json:"execution"`
+}
+
+// BlockExecutionMetrics stores the local application executor's measurements
+// alongside the Ethereum-compatible block metadata.
+type BlockExecutionMetrics struct {
+	Height           uint64 `json:"height"`
+	Executor         string `json:"executor"`
+	Workers          string `json:"workers"`
+	TransactionCount uint64 `json:"transactionCount"`
+	RetryCount       uint64 `json:"retryCount"`
+	ExecutionNanos   uint64 `json:"executionNanos"`
 }
 
 // EthereumTransaction lưu byte giao dịch chuẩn cùng vị trí của giao dịch trong khối.
@@ -91,8 +105,10 @@ func (app *App) stageEthereumBlock(
 	req *abci.FinalizeBlockRequest,
 	blockHash common.Hash,
 	stateRoot [32]byte,
+	baseFeePerGas *big.Int,
 	transactions []*types.Transaction,
 	results []evm.TxResult,
+	execution BlockExecutionMetrics,
 	writes map[string][]byte,
 ) error {
 	blockNumber := uint64(req.Height)
@@ -106,16 +122,17 @@ func (app *App) stageEthereumBlock(
 	}
 
 	block := EthereumBlock{
-		Number:       blockNumber,
-		Hash:         blockHash,
-		ParentHash:   parentHash,
-		Timestamp:    uint64(req.Time.Unix()),
-		Coinbase:     common.BytesToAddress(req.ProposerAddress),
-		GasLimit:     blockGasLimit,
-		StateRoot:    common.BytesToHash(stateRoot[:]),
-		Transactions: make([]common.Hash, 0, len(transactions)),
+		Number:        blockNumber,
+		Hash:          blockHash,
+		ParentHash:    parentHash,
+		Timestamp:     uint64(req.Time.Unix()),
+		Coinbase:      common.BytesToAddress(req.ProposerAddress),
+		GasLimit:      blockGasLimit,
+		BaseFeePerGas: new(big.Int).Set(baseFeePerGas),
+		StateRoot:     common.BytesToHash(stateRoot[:]),
+		Transactions:  make([]common.Hash, 0, len(transactions)),
+		Execution:     execution,
 	}
-
 	var cumulativeGas uint64
 	var logIndex uint
 	for originalIndex, transaction := range transactions {
@@ -199,6 +216,7 @@ func (app *App) stageEthereumBlock(
 			return fmt.Errorf("encode transaction location %s: %w", transactionHash, err)
 		}
 	}
+	block.Execution.TransactionCount = uint64(len(block.Transactions))
 
 	if err := putJSON(writes, ethereumBlockKey(blockNumber), &block); err != nil {
 		return fmt.Errorf("encode block %d: %w", blockNumber, err)

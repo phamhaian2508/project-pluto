@@ -89,6 +89,10 @@ func (app *App) callBlockEnv() evm.BlockEnv {
 		if block, found, err := app.EthereumBlockByNumber(uint64(height)); err == nil && found {
 			env.Time = block.Timestamp
 			env.Coinbase = block.Coinbase
+			env.BaseFee = new(big.Int)
+			if block.BaseFeePerGas != nil {
+				env.BaseFee.Set(block.BaseFeePerGas)
+			}
 		}
 	}
 	env.GetHash = func(number uint64) common.Hash {
