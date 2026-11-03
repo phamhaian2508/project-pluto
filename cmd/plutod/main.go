@@ -16,6 +16,7 @@ import (
 	cfg "github.com/cometbft/cometbft/config"
 	"github.com/cometbft/cometbft/crypto"
 	"github.com/cometbft/cometbft/crypto/ed25519"
+	cmtflags "github.com/cometbft/cometbft/libs/cli/flags"
 	cmtlog "github.com/cometbft/cometbft/libs/log"
 	cmtnode "github.com/cometbft/cometbft/node"
 	cmtp2p "github.com/cometbft/cometbft/p2p"
@@ -35,12 +36,18 @@ var (
 	homeDir       string
 	executor      string
 	workerSetting string
+	logLevel      string
+	timeoutCommit string
+	ethRPCAddress string
 )
 
 func init() {
 	flag.StringVar(&homeDir, "home", "", "Path to the home directory")
 	flag.StringVar(&executor, "executor", "sequential", "Block executor: sequential or parallel")
 	flag.StringVar(&workerSetting, "workers", "auto", "Parallel executor workers: auto or a positive integer")
+	flag.StringVar(&logLevel, "log-level", "", "Override CometBFT log level (debug, info, error, none)")
+	flag.StringVar(&timeoutCommit, "timeout-commit", "", "Override CometBFT timeout_commit (for example 1s)")
+	flag.StringVar(&ethRPCAddress, "eth-rpc", plutoconfig.EthereumRPCListenAddr, "Ethereum JSON-RPC listen address")
 }
 
 func parseWorkerSetting(setting string) (int, bool, error) {
@@ -70,9 +77,11 @@ func main() {
 		homeDir = os.ExpandEnv("$HOME/.plutod")
 	}
 
-	// Thiết lập cấu hình.
-	config := cfg.DefaultConfig()
-	config.SetRoot(homeDir)
+	// Đọc cấu hình đã lưu trong config.toml; cờ dòng lệnh chỉ ghi đè giá trị được nêu.
+	config, err := plutoconfig.LoadCometConfig(homeDir, logLevel, timeoutCommit)
+	if err != nil {
+		panic(err)
+	}
 
 	// Đảm bảo thư mục tồn tại
 	for _, dir := range []string{config.DBDir(), filepath.Dir(config.NodeKeyFile()), filepath.Dir(config.PrivValidatorStateFile())} {
@@ -83,6 +92,10 @@ func main() {
 
 	// Thiết lập bộ ghi nhật ký CometBFT.
 	logger := cmtlog.NewTMLogger(cmtlog.NewSyncWriter(os.Stdout))
+	logger, err = cmtflags.ParseLogLevel(config.LogLevel, logger, "info")
+	if err != nil {
+		panic(fmt.Errorf("parse log level %q: %w", config.LogLevel, err))
+	}
 	logger = logger.With("module", "main")
 
 	// Thiết lập bộ ghi nhật ký cho ứng dụng (Slog).
@@ -152,12 +165,12 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("failed to create Ethereum JSON-RPC server: %w", err))
 	}
-	if err := ethereumRPC.Start(plutoconfig.EthereumRPCListenAddr); err != nil {
+	if err := ethereumRPC.Start(ethRPCAddress); err != nil {
 		panic(fmt.Errorf("failed to start Ethereum JSON-RPC server: %w", err))
 	}
 
 	logger.Info("Node Started", "home", homeDir)
-	logger.Info("Ethereum JSON-RPC Started", "address", plutoconfig.EthereumRPCListenAddr)
+	logger.Info("Ethereum JSON-RPC Started", "address", ethRPCAddress)
 
 	// Chờ tín hiệu shutdown
 	c := make(chan os.Signal, 1)

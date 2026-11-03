@@ -1,11 +1,15 @@
 param(
     [string]$RpcUrl = "http://127.0.0.1:8545",
-    [string]$PrivateKey = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+    [string]$PrivateKey = $env:PLUTO_TEST_KEY,
     [string]$Recipient = "0x0000000000000000000000000000000000001234"
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
+
+if ([string]::IsNullOrWhiteSpace($PrivateKey)) {
+    throw "Set PLUTO_TEST_KEY to a funded local test account private key first. Do not use a real wallet key."
+}
 
 function Invoke-Tool {
     param([string]$Name, [string[]]$Arguments)
@@ -18,12 +22,19 @@ function Invoke-Tool {
 
 function Get-Receipt {
     param([string]$Hash)
-    $json = Invoke-Tool "cast" @("receipt", $Hash, "--rpc-url", $RpcUrl, "--json")
-    $receipt = $json | ConvertFrom-Json
-    if ([string]$receipt.status -notin @("0x1", "1")) {
-        throw "Transaction $Hash failed with status $($receipt.status)"
+    for ($attempt = 0; $attempt -lt 60; $attempt++) {
+        try {
+            $json = Invoke-Tool "cast" @("receipt", $Hash, "--rpc-url", $RpcUrl, "--json")
+            $receipt = $json | ConvertFrom-Json
+        }
+        catch {
+            if ($attempt -eq 59) { throw "Timed out waiting for transaction $($Hash): $_" }
+            Start-Sleep -Milliseconds 500
+            continue
+        }
+        if ([string]$receipt.status -notin @("0x1", "1")) { throw "Transaction $Hash failed with status $($receipt.status)" }
+        return $receipt
     }
-    return $receipt
 }
 
 foreach ($tool in @("forge", "cast")) {

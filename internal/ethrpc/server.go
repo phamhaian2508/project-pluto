@@ -34,6 +34,7 @@ func New(application *app.App, broadcasters ...TxBroadcaster) (*Server, error) {
 		api  any
 	}{
 		{"eth", &EthAPI{app: application, broadcaster: broadcaster}},
+		{"pluto", &PlutoAPI{app: application}},
 		{"net", &NetAPI{}},
 		{"web3", &Web3API{}},
 	}

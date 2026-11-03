@@ -71,6 +71,15 @@ func TestHTTPJSONRPCReadMethods(t *testing.T) {
 		{"chain ID", "eth_chainId", []any{}, expectJSON("0x7a69")},
 		{"network ID", "net_version", []any{}, expectJSON("31337")},
 		{"block number", "eth_blockNumber", []any{}, expectJSON("0x1")},
+		{"Pluto executor metrics", "pluto_getBlockMetrics", []any{"0x1"}, func(t *testing.T, result json.RawMessage) {
+			var metrics app.BlockExecutionMetrics
+			if err := json.Unmarshal(result, &metrics); err != nil {
+				t.Fatal(err)
+			}
+			if metrics.Height != 1 || metrics.TransactionCount != 1 || metrics.Executor != "sequential" {
+				t.Fatalf("unexpected block execution metrics: %+v", metrics)
+			}
+		}},
 		{"gas price", "eth_gasPrice", []any{}, expectJSON("0x0")},
 		{"priority fee", "eth_maxPriorityFeePerGas", []any{}, expectJSON("0x0")},
 		{"balance", "eth_getBalance", []any{to, "latest"}, expectJSON("0x5")},

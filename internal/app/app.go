@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"sort"
 	"strconv"
+	"time"
 
 	abci "github.com/cometbft/cometbft/abci/types"
 	"github.com/ethereum/go-ethereum/common"
@@ -276,6 +277,10 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		blockHash = sha256.Sum256(seed)
 	}
 	rand := sha256.Sum256(append([]byte("pluto-random-v1"), blockHash[:]...))
+	baseFeePerGas, err := app.BaseFeePerGasForBlock(uint64(req.Height))
+	if err != nil {
+		return nil, fmt.Errorf("calculate block base fee: %w", err)
+	}
 	getHash := func(n uint64) common.Hash {
 		if n >= uint64(req.Height) || req.Height-int64(n) > 256 {
 			return common.Hash{}
@@ -289,7 +294,7 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 	blockEnv := evm.BlockEnv{
 		Height: req.Height, Time: uint64(req.Time.Unix()),
 		Coinbase: common.BytesToAddress(req.ProposerAddress), GasLimit: blockGasLimit,
-		Random: common.Hash(rand), GetHash: getHash, BaseFee: new(big.Int), PreviousRoot: app.appHash,
+		Random: common.Hash(rand), GetHash: getHash, BaseFee: baseFeePerGas, PreviousRoot: app.appHash,
 	}
 	if app.executor == nil {
 		if app.executorMode == "parallel" {
@@ -302,9 +307,27 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 			app.executor = evm.NewSequentialExecutor(chainConfig, chainID)
 		}
 	}
+	executionStarted := time.Now()
 	blockResult, err := app.executor.ExecuteBlock(stateDB, blockEnv, transactions)
 	if err != nil {
 		return nil, fmt.Errorf("execute block: %w", err)
+	}
+	retryCount := blockResult.Metrics["retry_total"]
+	if retryCount == 0 {
+		retryCount = blockResult.Metrics["abort_total"]
+	}
+	workers := strconv.Itoa(app.workers)
+	if app.autoWorkers {
+		workers = "auto"
+	} else if app.executorMode == "sequential" {
+		workers = "1"
+	}
+	executionMetrics := BlockExecutionMetrics{
+		Height:         uint64(req.Height),
+		Executor:       app.executorMode,
+		Workers:        workers,
+		RetryCount:     uint64(retryCount),
+		ExecutionNanos: uint64(time.Since(executionStarted).Nanoseconds()),
 	}
 	if len(blockResult.Metrics) > 0 {
 		workerMode := fmt.Sprint(app.workers)
@@ -325,7 +348,7 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		txResults[i] = &abci.ExecTxResult{Code: code, Log: result.ErrMsg, GasUsed: int64(result.GasUsed)}
 		app.logger.Info("EVM executed", "height", req.Height, "txIndex", i, "gasUsed", result.GasUsed, "err", result.ErrMsg)
 	}
-	if err := app.stageEthereumBlock(req, blockHash, blockResult.StateRoot, transactions, blockResult.Results, blockResult.Writes); err != nil {
+	if err := app.stageEthereumBlock(req, blockHash, blockResult.StateRoot, baseFeePerGas, transactions, blockResult.Results, executionMetrics, blockResult.Writes); err != nil {
 		return nil, fmt.Errorf("stage ethereum block metadata: %w", err)
 	}
 
@@ -432,6 +455,19 @@ func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.Ch
 			Code: 1,
 			Log:  fmt.Sprintf("gas limit %d exceeds block gas limit %d", ethTx.Gas(), blockGasLimit),
 		}, nil
+	}
+	baseFeePerGas, err := app.NextBaseFeePerGas()
+	if err != nil {
+		return nil, fmt.Errorf("calculate next block base fee: %w", err)
+	}
+	if ethTx.GasFeeCap().Cmp(baseFeePerGas) < 0 {
+		return &abci.CheckTxResponse{
+			Code: 1,
+			Log:  fmt.Sprintf("max fee per gas %s is below next block base fee %s", ethTx.GasFeeCap(), baseFeePerGas),
+		}, nil
+	}
+	if ethTx.GasTipCap().Cmp(ethTx.GasFeeCap()) > 0 {
+		return &abci.CheckTxResponse{Code: 1, Log: "max priority fee per gas exceeds max fee per gas"}, nil
 	}
 
 	// Chuỗi bật Homestead, Istanbul (EIP-2028) và Shanghai (EIP-3860)

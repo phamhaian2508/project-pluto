@@ -1,6 +1,4 @@
 // PebbleDB là lớp bọc tuân thủ giao diện dbm.DB của CometBFT.
-
-
 package store
 
 import (

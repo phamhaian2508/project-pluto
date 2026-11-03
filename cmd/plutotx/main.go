@@ -21,6 +21,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -31,7 +32,19 @@ import (
 // Phải khớp với chainID trong internal/app/app.go
 const chainID = plutoconfig.EVMChainID
 
-const rpcURL = "http://localhost:26657"
+func cometRPCURL() string {
+	if value := os.Getenv("PLUTO_COMET_RPC_URL"); value != "" {
+		return value
+	}
+	return "http://localhost:26657"
+}
+
+func ethRPCURL() string {
+	if value := os.Getenv("PLUTO_ETH_RPC_URL"); value != "" {
+		return value
+	}
+	return "http://localhost:8545"
+}
 
 type rpcResponse struct {
 	Result json.RawMessage `json:"result"`
@@ -43,7 +56,7 @@ type rpcResponse struct {
 
 // rpcGet gọi RPC dạng URI của CometBFT.
 func rpcGet(method string, params url.Values) (json.RawMessage, error) {
-	resp, err := http.Get(rpcURL + "/" + method + "?" + params.Encode())
+	resp, err := http.Get(cometRPCURL() + "/" + method + "?" + params.Encode())
 	if err != nil {
 		return nil, fmt.Errorf("không kết nối được node (node đã chạy chưa?): %w", err)
 	}
@@ -118,11 +131,12 @@ func cmdSend(args []string) {
 	fs := flag.NewFlagSet("send", flag.ExitOnError)
 	keyHex := fs.String("key", "", "private key (hex) của người gửi")
 	toHex := fs.String("to", "", "địa chỉ người nhận")
-	eth := fs.Int64("eth", 0, "số ETH (số nguyên) cần chuyển")
+	plu := fs.Int64("plu", 0, "số PLU (số nguyên) cần chuyển")
+	fs.Int64Var(plu, "eth", 0, "tương thích ngược với cờ -plu")
 	fs.Parse(args)
 
-	if *keyHex == "" || *toHex == "" || *eth <= 0 {
-		fmt.Println("cách dùng: plutotx send -key <hex> -to 0xĐịaChỉ -eth 10")
+	if *keyHex == "" || *toHex == "" || *plu <= 0 {
+		fmt.Println("cách dùng: plutotx send -key <hex> -to 0xĐịaChỉ -plu 10")
 		os.Exit(1)
 	}
 
@@ -146,12 +160,13 @@ func cmdSend(args []string) {
 		os.Exit(1)
 	}
 
-	// 1 ETH = 1e18 wei
-	value := new(big.Int).Mul(big.NewInt(*eth), big.NewInt(1e18))
+	// 1 PLU = 1e18 wei.
+	value := new(big.Int).Mul(big.NewInt(*plu), big.NewInt(1e18))
+	gasPrice := fetchGasPrice()
 
 	tx := types.NewTx(&types.LegacyTx{
 		Nonce:    nonce,
-		GasPrice: big.NewInt(0), // Giai đoạn 1: giao dịch không mất phí gas.
+		GasPrice: gasPrice,
 		Gas:      21000,
 		To:       &to,
 		Value:    value,
@@ -186,8 +201,8 @@ func cmdSend(args []string) {
 		fmt.Printf("Mempool từ chối tx (code %d): %s\n", out.Code, out.Log)
 		os.Exit(1)
 	}
-	fmt.Printf("Đã gửi tx từ %s -> %s (%d ETH)\nTx hash: %s\nĐợi ~2 giây để vào block, rồi kiểm tra lại bằng lệnh balance.\n",
-		from.Hex(), to.Hex(), *eth, out.Hash)
+	fmt.Printf("Đã gửi tx từ %s -> %s (%d PLU)\nTx hash: %s\nĐợi ~2 giây để vào block, rồi kiểm tra lại bằng lệnh balance.\n",
+		from.Hex(), to.Hex(), *plu, out.Hash)
 }
 
 func cmdDeploy(args []string) {
@@ -209,7 +224,7 @@ func cmdDeploy(args []string) {
 	}
 	from := crypto.PubkeyToAddress(key.PublicKey)
 	nonce := fetchNonce(from)
-	tx := types.NewTx(&types.LegacyTx{Nonce: nonce, GasPrice: new(big.Int), Gas: *gas, Data: data})
+	tx := types.NewTx(&types.LegacyTx{Nonce: nonce, GasPrice: fetchGasPrice(), Gas: *gas, Data: data})
 	submitSignedTx(tx, key, func() {
 		fmt.Printf("Contract address: %s\n", crypto.CreateAddress(from, nonce).Hex())
 	})
@@ -235,7 +250,7 @@ func cmdCall(args []string) {
 	}
 	to := common.HexToAddress(*toHex)
 	nonce := fetchNonce(crypto.PubkeyToAddress(key.PublicKey))
-	tx := types.NewTx(&types.LegacyTx{Nonce: nonce, GasPrice: new(big.Int), Gas: *gas, To: &to, Data: data})
+	tx := types.NewTx(&types.LegacyTx{Nonce: nonce, GasPrice: fetchGasPrice(), Gas: *gas, To: &to, Data: data})
 	submitSignedTx(tx, key, nil)
 }
 
@@ -262,6 +277,36 @@ func fetchNonce(from common.Address) uint64 {
 		fatal("invalid nonce from node", err)
 	}
 	return nonce
+}
+
+func fetchGasPrice() *big.Int {
+	request, err := http.NewRequest(http.MethodPost, ethRPCURL(), strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"eth_gasPrice","params":[]}`))
+	if err != nil {
+		fatal("gas price request creation failed", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	if err != nil {
+		fatal("could not get gas price from Ethereum RPC; set PLUTO_ETH_RPC_URL", err)
+	}
+	defer response.Body.Close()
+	var result struct {
+		Result string `json:"result"`
+		Error  *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		fatal("invalid gas price response", err)
+	}
+	if result.Error != nil {
+		fatal("gas price RPC failed", fmt.Errorf("%s", result.Error.Message))
+	}
+	price, ok := new(big.Int).SetString(strings.TrimPrefix(result.Result, "0x"), 16)
+	if !ok || price.Sign() <= 0 {
+		fatal("invalid gas price returned by node", fmt.Errorf("%q", result.Result))
+	}
+	return price
 }
 
 func submitSignedTx(tx *types.Transaction, key *ecdsa.PrivateKey, after func()) {
