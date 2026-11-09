@@ -209,6 +209,25 @@ func (app *App) ConfigureAdaptiveExecutor(mode string) error {
 	return nil
 }
 
+// ConfigureCheckpoints applies checkpoint capture/recovery only to the
+// parallel executor. P0 remains a harmless no-op for the sequential default.
+func (app *App) ConfigureCheckpoints(config evm.CheckpointConfig) error {
+	if err := config.Validate(); err != nil {
+		return fmt.Errorf("invalid checkpoint configuration: %w", err)
+	}
+	if app.executorMode != "parallel" {
+		if config.Policy == evm.CheckpointPolicyP0 {
+			return nil
+		}
+		return fmt.Errorf("checkpoint policy %s requires the parallel executor", config.Policy)
+	}
+	parallel, ok := app.executor.(*evm.ParallelExecutor)
+	if !ok {
+		return fmt.Errorf("parallel executor does not support checkpoint configuration")
+	}
+	return parallel.ConfigureCheckpoints(config)
+}
+
 // Info trả về trạng thái hiện tại khi nút khởi động lại.
 // Đây là bước bắt tay giữa ứng dụng và CometBFT.
 func (app *App) Info(ctx context.Context, req *abci.InfoRequest) (*abci.InfoResponse, error) {
