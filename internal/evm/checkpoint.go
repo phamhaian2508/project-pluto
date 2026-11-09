@@ -2,7 +2,9 @@ package evm
 
 import (
 	"errors"
+	"fmt"
 	"math/big"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/holiman/uint256"
@@ -29,6 +31,23 @@ type CheckpointConfig struct {
 
 func DefaultCheckpointConfig() CheckpointConfig {
 	return CheckpointConfig{Policy: CheckpointPolicyP0}
+}
+
+// ParseCheckpointPolicy converts the stable command-line names P0-P3 into the
+// corresponding deterministic checkpoint policy.
+func ParseCheckpointPolicy(value string) (CheckpointPolicy, error) {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case "P0":
+		return CheckpointPolicyP0, nil
+	case "P1":
+		return CheckpointPolicyP1, nil
+	case "P2":
+		return CheckpointPolicyP2, nil
+	case "P3":
+		return CheckpointPolicyP3, nil
+	default:
+		return CheckpointPolicyP0, fmt.Errorf("unknown checkpoint policy %q (want p0, p1, p2 or p3)", value)
+	}
 }
 
 func (c CheckpointConfig) Validate() error {

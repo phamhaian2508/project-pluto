@@ -29,16 +29,19 @@ import (
 	"github.com/phamhaian2508/project-pluto/internal/app"
 	plutoconfig "github.com/phamhaian2508/project-pluto/internal/config"
 	"github.com/phamhaian2508/project-pluto/internal/ethrpc"
+	"github.com/phamhaian2508/project-pluto/internal/evm"
 	"github.com/phamhaian2508/project-pluto/internal/store"
 )
 
 var (
-	homeDir       string
-	executor      string
-	workerSetting string
-	logLevel      string
-	timeoutCommit string
-	ethRPCAddress string
+	homeDir            string
+	executor           string
+	workerSetting      string
+	logLevel           string
+	timeoutCommit      string
+	ethRPCAddress      string
+	checkpointPolicy   string
+	checkpointInterval uint64
 )
 
 func init() {
@@ -48,6 +51,8 @@ func init() {
 	flag.StringVar(&logLevel, "log-level", "", "Override CometBFT log level (debug, info, error, none)")
 	flag.StringVar(&timeoutCommit, "timeout-commit", "", "Override CometBFT timeout_commit (for example 1s)")
 	flag.StringVar(&ethRPCAddress, "eth-rpc", plutoconfig.EthereumRPCListenAddr, "Ethereum JSON-RPC listen address")
+	flag.StringVar(&checkpointPolicy, "checkpoint-policy", "p0", "Parallel checkpoint policy: p0, p1, p2 or p3")
+	flag.Uint64Var(&checkpointInterval, "checkpoint-interval", 100, "Opcode interval for checkpoint policy p2")
 }
 
 func parseWorkerSetting(setting string) (int, bool, error) {
@@ -62,6 +67,21 @@ func parseWorkerSetting(setting string) (int, bool, error) {
 	return workers, false, nil
 }
 
+func parseCheckpointSetting(policy string, interval uint64) (evm.CheckpointConfig, error) {
+	parsed, err := evm.ParseCheckpointPolicy(policy)
+	if err != nil {
+		return evm.CheckpointConfig{}, err
+	}
+	config := evm.CheckpointConfig{Policy: parsed}
+	if parsed == evm.CheckpointPolicyP2 {
+		config.Interval = interval
+	}
+	if err := config.Validate(); err != nil {
+		return evm.CheckpointConfig{}, err
+	}
+	return config, nil
+}
+
 // Bộ cung cấp cơ sở dữ liệu Pebble.
 func PebbleDBProvider(ctx *cfg.DBContext) (dbm.DB, error) {
 	return store.NewPebbleDB(ctx.ID, ctx.Config.DBDir())
@@ -70,6 +90,10 @@ func PebbleDBProvider(ctx *cfg.DBContext) (dbm.DB, error) {
 func main() {
 	flag.Parse()
 	workers, autoWorkers, err := parseWorkerSetting(workerSetting)
+	if err != nil {
+		panic(err)
+	}
+	checkpointConfig, err := parseCheckpointSetting(checkpointPolicy, checkpointInterval)
 	if err != nil {
 		panic(err)
 	}
@@ -134,6 +158,9 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("configure block executor: %w", err))
 	}
+	if err := myApp.ConfigureCheckpoints(checkpointConfig); err != nil {
+		panic(fmt.Errorf("configure checkpoints: %w", err))
+	}
 	defer myApp.Close()
 
 	// Tạo ngữ cảnh cho nút.
@@ -169,7 +196,7 @@ func main() {
 		panic(fmt.Errorf("failed to start Ethereum JSON-RPC server: %w", err))
 	}
 
-	logger.Info("Node Started", "home", homeDir)
+	logger.Info("Node Started", "home", homeDir, "executor", executor, "checkpoint_policy", checkpointConfig.Policy.String(), "checkpoint_interval", checkpointConfig.Interval)
 	logger.Info("Ethereum JSON-RPC Started", "address", ethRPCAddress)
 
 	// Chờ tín hiệu shutdown

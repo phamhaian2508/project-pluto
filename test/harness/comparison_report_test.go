@@ -221,6 +221,11 @@ func runComparisonSample(t *testing.T, workload differentialWorkload, mode compa
 		for address, code := range workload.initialCode {
 			seed.SetCode(address, code, tracing.CodeChangeUnspecified)
 		}
+		for address, slots := range workload.initialStorage {
+			for slot, value := range slots {
+				seed.SetState(address, slot, value)
+			}
+		}
 		if err := seed.Commit(); err != nil {
 			_ = db.Close()
 			t.Fatalf("seed comparison state: %v", err)

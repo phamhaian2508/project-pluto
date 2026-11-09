@@ -98,6 +98,7 @@ type differentialWorkload struct {
 	accounts        []common.Address
 	initialBalances map[common.Address]*big.Int
 	initialCode     map[common.Address][]byte
+	initialStorage  map[common.Address]map[common.Hash]common.Hash
 	storageSlots    map[common.Address][]common.Hash
 	initialBalance  *big.Int
 	env             evm.BlockEnv
@@ -203,6 +204,11 @@ func runPlutoDifferentialWorkload(t testing.TB, executor evm.Executor, workload 
 	for addr, code := range workload.initialCode {
 		seed.SetCode(addr, code, tracing.CodeChangeUnspecified)
 	}
+	for addr, slots := range workload.initialStorage {
+		for slot, value := range slots {
+			seed.SetState(addr, slot, value)
+		}
+	}
 	if err := seed.Commit(); err != nil {
 		t.Fatalf("seed Pluto harness state: %v", err)
 	}
@@ -249,6 +255,9 @@ func workloadAddresses(workload differentialWorkload) []common.Address {
 		add(addr)
 	}
 	for addr := range workload.initialCode {
+		add(addr)
+	}
+	for addr := range workload.initialStorage {
 		add(addr)
 	}
 	return addresses
@@ -307,7 +316,8 @@ func buildReceipts(workload differentialWorkload, results []evm.TxResult) []*typ
 func runGethDifferentialWorkload(t testing.TB, workload differentialWorkload) differentialObservation {
 	t.Helper()
 	chainConfig := newChainConfig()
-	stateDB, err := gethstate.New(common.Hash{}, gethstate.NewDatabaseForTesting())
+	stateDatabase := gethstate.NewDatabaseForTesting()
+	stateDB, err := gethstate.New(common.Hash{}, stateDatabase)
 	if err != nil {
 		t.Fatalf("create geth reference state: %v", err)
 	}
@@ -320,6 +330,21 @@ func runGethDifferentialWorkload(t testing.TB, workload differentialWorkload) di
 	}
 	for addr, code := range workload.initialCode {
 		stateDB.SetCode(addr, code, tracing.CodeChangeUnspecified)
+	}
+	for addr, slots := range workload.initialStorage {
+		for slot, value := range slots {
+			stateDB.SetState(addr, slot, value)
+		}
+	}
+	if len(workload.initialStorage) > 0 {
+		root, commitErr := stateDB.Commit(0, true, false)
+		if commitErr != nil {
+			t.Fatalf("commit geth seed state: %v", commitErr)
+		}
+		stateDB, err = gethstate.New(root, stateDatabase)
+		if err != nil {
+			t.Fatalf("reopen geth seed state: %v", err)
+		}
 	}
 
 	blockContext := vm.BlockContext{
