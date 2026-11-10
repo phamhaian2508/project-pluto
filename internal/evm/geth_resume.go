@@ -130,6 +130,63 @@ func gethPrivateBool(owner any, name string) (bool, error) {
 	return field.Bool(), nil
 }
 
+func gethPrivateInt(owner any, name string) (int, error) {
+	field, err := privateField(owner, name)
+	if err != nil {
+		return 0, err
+	}
+	return int(field.Int()), nil
+}
+
+func gethPrivateBytes(owner any, name string) ([]byte, error) {
+	field, err := privateField(owner, name)
+	if err != nil {
+		return nil, err
+	}
+	if field.Kind() != reflect.Slice || field.Type().Elem().Kind() != reflect.Uint8 {
+		return nil, fmt.Errorf("geth field %s is not a byte slice", name)
+	}
+	return append([]byte(nil), field.Bytes()...), nil
+}
+
+// installPreGasCheckpointHooks gives this EVM a private jump table whose
+// dynamic-gas functions capture the selected checkpoint before dynamic gas is
+// evaluated. The shared geth fork tables remain untouched.
+func installPreGasCheckpointHooks(evmEnv *vm.EVM, capture *checkpointCapture) error {
+	if evmEnv == nil || capture == nil {
+		return errors.New("pre-gas checkpoint hooks require EVM and capture state")
+	}
+	table, err := gethJumpTable(evmEnv)
+	if err != nil {
+		return err
+	}
+	cloned := new(gethJumpTableView)
+	for opcode, operation := range table {
+		if operation == nil {
+			continue
+		}
+		copyOperation := *operation
+		if operation.dynamicGas != nil {
+			original := operation.dynamicGas
+			opcodeByte := byte(opcode)
+			constantGas := operation.constantGas
+			copyOperation.dynamicGas = func(evmEnv *vm.EVM, contract *vm.Contract, stack *vm.Stack, memory *vm.Memory, memorySize uint64) (uint64, error) {
+				capture.beforeDynamicGas(opcodeByte, evmEnv, contract, stack, memory, constantGas)
+				return original(evmEnv, contract, stack, memory, memorySize)
+			}
+		}
+		cloned[opcode] = &copyOperation
+	}
+	field, err := privateField(evmEnv, "table")
+	if err != nil {
+		return err
+	}
+	replacement := reflect.NewAt(field.Type().Elem(), unsafe.Pointer(cloned))
+	field.Set(replacement)
+	capture.jumpTable = cloned
+	return nil
+}
+
 func restoreGethStack(words []uint256.Int) (*vm.Stack, error) {
 	stack := new(vm.Stack)
 	field, err := privateField(stack, "data")
@@ -153,9 +210,9 @@ func restoreGethMemory(data []byte, lastGasCost uint64) (*vm.Memory, error) {
 	return memory, nil
 }
 
-// resumeGethFrame tiếp tục từ checkpoint của tracer. Geth gọi OnOpcode sau khi
-// tính gas cố định/động nhưng trước khi mở rộng bộ nhớ và thực thi; vì vậy opcode
-// đầu tiên sau khi khôi phục không được tính phí lần thứ hai.
+// resumeGethFrame tiếp tục từ checkpoint được chụp trước gas. Opcode đầu
+// tiên sau khi khôi phục phải tính lại gas cố định/động đúng một lần
+// trước khi mở rộng bộ nhớ và thực thi opcode.
 func resumeGethFrame(evmEnv *vm.EVM, frame CallFrameState, machine InterpreterState, meter *attemptReplayMeter) (ret []byte, gasLeft uint64, runErr error) {
 	if !resumableGethVersionAvailable() {
 		return nil, 0, errResumeUnsupported
@@ -198,7 +255,6 @@ func resumeGethFrame(evmEnv *vm.EVM, frame CallFrameState, machine InterpreterSt
 	}
 
 	pc := machine.PC
-	firstCharged := true
 	for {
 		op := contract.GetOp(pc)
 		operation := table[byte(op)]
@@ -222,23 +278,18 @@ func resumeGethFrame(evmEnv *vm.EVM, frame CallFrameState, machine InterpreterSt
 			}
 		}
 		gasBefore := contract.Gas
-		cost := uint64(0)
-		if firstCharged {
-			firstCharged = false
-		} else {
-			cost = operation.constantGas
-			if contract.Gas < cost {
+		cost := operation.constantGas
+		if contract.Gas < cost {
+			return nil, 0, vm.ErrOutOfGas
+		}
+		contract.Gas -= cost
+		if operation.dynamicGas != nil {
+			dynamicCost, gasErr := operation.dynamicGas(evmEnv, contract, stack, memory, memorySize)
+			cost += dynamicCost
+			if gasErr != nil || contract.Gas < dynamicCost {
 				return nil, 0, vm.ErrOutOfGas
 			}
-			contract.Gas -= cost
-			if operation.dynamicGas != nil {
-				dynamicCost, gasErr := operation.dynamicGas(evmEnv, contract, stack, memory, memorySize)
-				cost += dynamicCost
-				if gasErr != nil || contract.Gas < dynamicCost {
-					return nil, 0, vm.ErrOutOfGas
-				}
-				contract.Gas -= dynamicCost
-			}
+			contract.Gas -= dynamicCost
 		}
 		if memorySize > 0 {
 			memory.Resize(memorySize)
