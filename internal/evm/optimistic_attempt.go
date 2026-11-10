@@ -494,6 +494,9 @@ func executeOptimisticAttemptConfigured(base *PebbleStateDB, versions *MVMemory,
 	evmEnv := vm.NewEVM(blockContext, state, config, vmConfig)
 	if capture != nil {
 		capture.evm = evmEnv
+		if err := installPreGasCheckpointHooks(evmEnv, capture); err != nil {
+			return nil, fmt.Errorf("install pre-gas checkpoint hooks: %w", err)
+		}
 	}
 	evmEnv.SetTxContext(core.NewEVMTxContext(msg))
 	logStart := len(state.GetLogs())
