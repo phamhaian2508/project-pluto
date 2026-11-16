@@ -1,22 +1,11 @@
-# M5.1 spike 1B: checkpoint at an EVM call-frame boundary
+# Thử nghiệm M5.1 1B: checkpoint tại ranh giới khung gọi
 
-This spike uses geth unchanged and is isolated from Pluto's production executor.
-It reuses `gethfork.SampleContract` from spike 1A.
+Spike này dùng geth nguyên bản và được cô lập khỏi executor production của Pluto. Nó dùng lại `gethfork.SampleContract` từ spike 1A.
 
-## Result
+## Kết quả
 
-- **Works at an external, complete frame boundary:** take a `StateDB` snapshot
-  before a top-level call, revert to it, and replay the whole parent frame. The
-  test proves identical output, gas, nested trace, and storage.
-- **Observable:** public tracing hooks report nested `CALL` entry/exit,
-  `returnData`, gas used, revert, and out-of-gas. Emitted logs remain available
-  in `StateDB` and are rolled back by snapshots.
-- **Not resumable at a nested `CALL` boundary:** `OnExit` does not expose the
-  suspended parent's PC, stack, memory, remaining gas, or return-data buffer.
-  Public geth APIs also provide no way to restore those fields. Therefore a
-  checkpoint captured when a child returns cannot continue the parent at its
-  next opcode; the whole parent frame must be replayed.
+- **Hoạt động tại ranh giới frame hoàn chỉnh bên ngoài:** chụp `StateDB` trước top-level call, hoàn tác về snapshot rồi phát lại toàn bộ frame cha. Test xác nhận đầu ra, gas, trace lời gọi lồng nhau và storage giống nhau.
+- **Có thể quan sát:** hook tracing công khai báo lúc vào/ra `CALL` lồng nhau, `returnData`, gas sử dụng, revert và hết gas. Log nằm trong `StateDB` và được hoàn tác cùng snapshot.
+- **Không thể tiếp tục tại ranh giới `CALL` lồng nhau:** `OnExit` không cung cấp PC, stack, memory, gas còn lại hay vùng `returnData` của frame cha đang treo. API công khai geth cũng không cho khôi phục các trường này. Vì vậy, khi hàm con trả về, không thể tiếp tục frame cha ở opcode kế tiếp; phải phát lại toàn bộ frame cha.
 
-This approach changes no geth interpreter code and has a small maintenance
-surface, but its checkpoint granularity is coarser than spike 1A. It does not
-implement production integration or M5.2.
+> Cách này không sửa interpreter geth và có phạm vi bảo trì nhỏ, nhưng checkpoint thô hơn spike 1A. Nó không triển khai tích hợp production hay phần M5.2.

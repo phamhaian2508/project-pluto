@@ -58,10 +58,11 @@ Harness trong `test/harness` tạo cơ sở dữ liệu và workload dùng riên
 | `go.mod` | Tên module Go, phiên bản Go và các thư viện chính. Những thư viện đáng chú ý: CometBFT, go-ethereum và Pebble. |
 | `go.sum` | Khóa checksum của các phiên bản thư viện để Go tải và xác minh dependency nhất quán. |
 | `foundry.toml` | Cấu hình Foundry dùng biên dịch/test hợp đồng Solidity. |
-| `CHECKPOINT_DEMO.md` | Hướng dẫn chạy demo checkpoint M5 và giải thích cách đọc trace. |
-| `checkpoint-metrics.csv` | Một bản xuất metric P0–P3 đã ghi ra CSV. Đây là dữ liệu của một lượt chạy cụ thể, không phải kết quả benchmark phổ quát. |
-| `REMIX.md` | Ghi chú hướng dẫn làm việc với Remix và hợp đồng. |
-| `quantum_cryptography.md` | Tài liệu nghiên cứu mật mã lượng tử. Đây là tài liệu tham khảo; không có nghĩa thuật toán lượng tử đang được dùng trong đường xử lý giao dịch của node. |
+| `README.md` | Điểm bắt đầu của repository và liên kết tới tài liệu chính. |
+| `docs/huong-dan-lenh-pluto.md` | Lệnh chạy node đơn/mạng validator, kiểm thử và thao tác hợp đồng tiết kiệm. |
+| `docs/huong-dan-remix.md` | Kết nối Remix và MetaMask với node cục bộ. |
+| `docs/nghien-cuu-mat-ma-hau-luong-tu.md` | Tài liệu nghiên cứu/đề xuất; không phải tính năng đã tích hợp vào node. |
+| `foundry.toml` | Cấu hình Foundry cho hợp đồng Solidity. |
 
 ## 6. Chương trình có thể chạy: `cmd/`
 
@@ -156,7 +157,7 @@ Checkpoint giúp tránh chạy lại một phần opcode sau xung đột, nhưng
 | `api.go` | Cài đặt các phương thức JSON-RPC như chain ID, block number, balance, nonce, code, storage, block/transaction/receipt, gửi giao dịch thô, `eth_call` và `eth_estimateGas`. Đây là một tập phương thức tương thích cần thiết cho công cụ ví, không có nghĩa mọi Ethereum RPC đều đã được triển khai. |
 | `server_test.go` | Kiểm tra HTTP RPC, các phương thức đọc, từ chối block ngoài head, giao dịch bị CheckTx từ chối, CORS, receipt và persistence sau restart. |
 
-## 12. Harness, test và benchmark: `test/harness/`
+## 12. Bộ kiểm thử và đo hiệu năng: `test/harness/`
 
 | Tệp | Chức năng |
 |---|---|
@@ -170,13 +171,13 @@ Checkpoint giúp tránh chạy lại một phần opcode sau xung đột, nhưng
 
 Các đối chiếu với geth kiểm tra kết quả và trạng thái quan sát được. Root của geth và AppHash riêng của Pluto có định dạng/cách tính khác nhau nên không thể so byte-for-byte như cùng một loại root. Các test chỉ chứng minh workload đã chạy qua; chúng không bao phủ hết mọi opcode, fork hoặc hành vi EVM.
 
-## 13. Spike thiết kế checkpoint: `test/spike/`
+## 13. Thử nghiệm thiết kế checkpoint: `test/spike/`
 
 Spike là mã thử nghiệm phục vụ quyết định thiết kế; không nhầm tất cả file trong đây với đường chạy node production.
 
 | Tệp | Chức năng |
 |---|---|
-| `M5.1-DECISION.md` | Ghi quyết định kỹ thuật về hướng checkpoint và ưu/nhược điểm các phương án. |
+| `quyet-dinh-m5-1.md` | Ghi quyết định kỹ thuật về hướng checkpoint và ưu/nhược điểm các phương án. |
 | `gethfork/interpreter.go` | Bản thử nghiệm vòng lặp interpreter fork để đánh giá resume giữa opcode. |
 | `gethfork/interpreter_test.go` | Test kết quả spike so với chạy liên tục/geth và quyền sở hữu dữ liệu snapshot. |
 | `gethfork/README.md` | Giới hạn và cách chạy spike interpreter fork. |
@@ -191,7 +192,10 @@ Spike là mã thử nghiệm phục vụ quyết định thiết kế; không nh
 
 | Tệp | Chức năng |
 |---|---|
-| `docs/foundry-e2e.md` | Các bước chạy kiểm thử end-to-end với Foundry/RPC. |
+| `docs/README.md` | Danh mục hướng dẫn, thiết kế và nghiên cứu. |
+| `docs/ghi-chu-huong-nghien-cuu.md` | Danh sách câu hỏi nghiên cứu chưa phải kết quả triển khai. |
+| `docs/huong-dan-remix.md` | Hướng dẫn dùng Remix với node Pluto cục bộ. |
+| `docs/huong-dan-lenh-pluto.md` | Sổ tay lệnh vận hành, kiểm thử và gửi tiết kiệm. |
 | `scripts/foundry-e2e.ps1` | Script PowerShell tự động hóa một phần kịch bản Foundry. |
 | `.github/workflows/ci.yml` | CI build, vet, test, race detector và fuzz smoke test trên các nhánh được workflow cấu hình. |
 | `.gitignore` | Quy định các tệp không đưa vào Git, gồm dữ liệu sinh ra hoặc cấu hình môi trường cục bộ. |

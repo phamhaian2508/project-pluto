@@ -1,62 +1,60 @@
-# Toán học Lượng tử & Mật mã Hậu lượng tử cho Pluto Blockchain
+# Mật mã hậu lượng tử: nền tảng và khả năng nghiên cứu cho Pluto
 
-> **Tài liệu nghiên cứu kỹ thuật — Pluto/UniCore Blockchain**
-> Phiên bản: 1.0 | Ngày: 2026-07-06
-> Tác giả: Pluto Research Team
+> **Trạng thái: tài liệu nghiên cứu, chưa triển khai trong node Pluto.**
+> Đây là tổng quan và đề xuất ban đầu; các con số hiệu năng, nhận định an toàn và lộ trình cần được kiểm chứng bằng nguồn chuẩn và đo đạc trước khi đưa vào báo cáo chính thức.
+> Tài liệu này không chứng minh Pluto hỗ trợ chữ ký PQC, QRNG, hợp đồng dựng sẵn hậu lượng tử hay mempool mã hóa.
 
 ---
 
 ## Mục lục
 
-1. [Giới thiệu & Động lực](#1-giới-thiệu--động-lực)
-2. [Phần I — Nền tảng Toán học: Lattice & LWE](#2-phần-i--nền-tảng-toán-học-lattice--lwe)
-3. [Phần II — Post-Quantum Cryptography (PQC)](#3-phần-ii--post-quantum-cryptography-pqc)
-4. [Phần III — Quantum Random Number Generation (QRNG)](#4-phần-iii--quantum-random-number-generation-qrng)
-5. [Triển khai trong Pluto Blockchain](#5-triển-khai-trong-pluto-blockchain)
-6. [Đánh giá hiệu năng & Trade-offs](#6-đánh-giá-hiệu-năng--trade-offs)
-7. [Lộ trình triển khai](#7-lộ-trình-triển-khai)
-8. [Tài liệu tham khảo](#8-tài-liệu-tham-khảo)
+1. Giới thiệu và động lực
+2. Nền tảng toán học: lưới và LWE
+3. Mật mã hậu lượng tử (PQC)
+4. Sinh số ngẫu nhiên lượng tử (QRNG)
+5. Đề xuất tích hợp (chưa triển khai)
+6. Đánh giá hiệu năng và các đánh đổi
+7. Lộ trình nghiên cứu tham khảo
+8. Tài liệu tham khảo
 
 ---
 
 ## 1. Giới thiệu & Động lực
 
-### 1.1 Mối đe dọa lượng tử với Blockchain
+### 1.1 Mối đe dọa lượng tử với chuỗi khối
 
-Máy tính lượng tử đe dọa trực tiếp đến nền tảng mật mã mà mọi blockchain đang sử dụng:
+Máy tính lượng tử đủ năng lực có thể đe dọa một số thuật toán mật mã khóa công khai. Mức độ và thời điểm rủi ro phụ thuộc vào tiến bộ phần cứng, thuật toán và cách hệ thống quản lý khóa:
 
 | Thuật toán lượng tử | Mục tiêu tấn công | Ảnh hưởng |
 |---|---|---|
-| **Shor's Algorithm** | Phân tích số nguyên, Logarithm rời rạc | Phá vỡ RSA, ECDSA, Ed25519 |
-| **Grover's Algorithm** | Tìm kiếm brute-force | Giảm 50% security level của hash (SHA-256: 256-bit → 128-bit) |
+| **Thuật toán Shor** | Phân tích số nguyên, logarit rời rạc | Có thể phá RSA, ECDSA và Ed25519 nếu máy tính lượng tử đủ năng lực |
+| **Thuật toán Grover** | Tìm kiếm trong không gian khóa | Làm giảm mức an toàn hiệu dụng của một số hàm băm; mức giảm phụ thuộc mô hình tấn công và độ dài đầu ra |
 
 ### 1.2 Phân tích mối đe dọa cụ thể với Pluto
 
 | Thành phần Pluto | Thuật toán hiện tại | Bị đe dọa? | Mức nghiêm trọng |
 |---|---|---|---|
-| Validator keys (CometBFT) | Ed25519 | ✅ Shor's | **Nghiêm trọng** — giả mạo validator |
-| Tx signatures (EVM) | ECDSA secp256k1 | ✅ Shor's | **Nghiêm trọng** — giả mạo giao dịch |
-| AppHash | SHA-256 | ⚠️ Grover's | Trung bình — vẫn 128-bit security |
-| PebbleDB storage | — | ❌ | Không ảnh hưởng |
-| P2P encryption | TLS 1.3 (ECDHE) | ✅ Shor's | Cao — nghe lén traffic |
+| Khóa validator (CometBFT) | Ed25519 | ✅ Thuật toán Shor | **Nghiêm trọng nếu kịch bản lượng tử đủ năng lực xảy ra** — có nguy cơ giả mạo validator |
+| Chữ ký giao dịch (EVM) | ECDSA secp256k1 | ✅ Thuật toán Shor | **Nghiêm trọng nếu kịch bản lượng tử đủ năng lực xảy ra** — có nguy cơ giả mạo giao dịch |
+| AppHash | SHA-256 | ⚠️ Thuật toán Grover | Cần đánh giá mức an toàn hiệu dụng theo mô hình tấn công và yêu cầu của hệ thống |
+| Dữ liệu PebbleDB | — | ❌ | Không bị ảnh hưởng trực tiếp bởi các thuật toán trên |
+| Mã hóa P2P | TLS 1.3 (ECDHE) | ✅ Thuật toán Shor | Có nguy cơ với dữ liệu lưu lại để giải mã sau |
 
-### 1.3 Mô hình đe dọa "Harvest Now, Decrypt Later" (HNDL)
+### 1.3 Mô hình đe dọa HNDL (thu thập hôm nay, giải mã sau)
 
 ```
-  Hiện tại (2026)              Tương lai (2030-2040?)
-  ─────────────                ──────────────────────
-  Kẻ tấn công thu thập    →   Máy tính lượng tử đủ mạnh
-  tất cả traffic mã hóa       → Giải mã tất cả dữ liệu cũ
-  trên blockchain              → Giả mạo chữ ký, chiếm tài sản
+  Dữ liệu truyền riêng tư được mã hóa ── thu thập hôm nay ──> có thể bị giải mã sau
+  Giao dịch blockchain công khai       ── công khai ngay từ đầu; không phải dữ liệu mã hóa
+  Chữ ký số và khóa                   ── cần đánh giá rủi ro giả mạo/khôi phục khóa riêng
 ```
 
-> **Hệ quả:** Dữ liệu blockchain là **bất biến và công khai**. Mọi giao dịch đã ghi đều có thể bị phân tích ngược khi máy tính lượng tử xuất hiện. Chuẩn bị PQC từ bây giờ là bắt buộc.
+> **Giới hạn của mô hình:** HNDL áp dụng chủ yếu với dữ liệu được mã hóa và lưu giữ để giải mã về sau. Giao dịch trên blockchain công khai vốn không được mã hóa, nên không thể nói rằng máy tính lượng tử sẽ giải mã toàn bộ lịch sử giao dịch. Rủi ro chữ ký và quản lý khóa là vấn đề riêng, cần phân tích theo cách lộ khóa công khai và thiết kế tài khoản. Việc chuẩn bị PQC ở đây là hướng nghiên cứu, không phải kết luận rằng Pluto đã cần hay đã triển khai thay đổi giao thức.
 
 ---
 
-## 2. Phần I — Nền tảng Toán học: Lattice & LWE
+## 2. Phần I — Nền tảng toán học: lưới và LWE
 
-### 2.1 Lattice (Lưới) là gì?
+### 2.1 Lưới (lattice) là gì?
 
 **Lattice** (lưới) là tập hợp các điểm trong không gian Euclid tạo thành cấu trúc tuần hoàn, được sinh bởi tổ hợp tuyến tính nguyên của các vector cơ sở.
 
@@ -86,11 +84,11 @@ Tức là tất cả tổ hợp tuyến tính nguyên (integer linear combinatio
   b₁, b₂ = Vector cơ sở
 ```
 
-### 2.2 Các bài toán khó trên Lattice
+### 2.2 Các bài toán khó trên lưới
 
 Ba bài toán nền tảng mà mật mã lattice-based dựa vào:
 
-#### a) Shortest Vector Problem (SVP)
+#### a) Bài toán vector ngắn nhất (SVP)
 
 **Bài toán:** Tìm vector **ngắn nhất** (khác 0) trong lattice.
 
@@ -102,7 +100,7 @@ Cho lattice L(B), tìm v ∈ L(B) sao cho:
 - Trong không gian thấp (n ≤ 50): giải được bằng thuật toán LLL
 - Trong không gian cao (n ≥ 256): **NP-hard** — kể cả máy tính lượng tử cũng không giải được hiệu quả
 
-#### b) Closest Vector Problem (CVP)
+#### b) Bài toán vector gần nhất (CVP)
 
 **Bài toán:** Cho vector mục tiêu **t** (không nhất thiết nằm trên lưới), tìm điểm lưới **gần nhất** với **t**.
 
@@ -111,11 +109,11 @@ Cho lattice L(B) và vector t, tìm v ∈ L(B) sao cho:
   ‖v - t‖ = min{ ‖u - t‖ : u ∈ L(B) }
 ```
 
-#### c) Shortest Independent Vectors Problem (SIVP)
+#### c) Bài toán các vector độc lập ngắn nhất (SIVP)
 
 **Bài toán:** Tìm n vector độc lập tuyến tính trong lattice sao cho vector dài nhất trong nhóm là ngắn nhất có thể.
 
-### 2.3 Learning With Errors (LWE)
+### 2.3 Bài toán học có nhiễu (LWE)
 
 **LWE** do Oded Regev đề xuất năm 2005. Đây là nền tảng trực tiếp của PQC hiện đại.
 
@@ -226,7 +224,7 @@ k = 3: ML-KEM-768   (192-bit security)  ← Khuyến nghị cho Pluto
 k = 4: ML-KEM-1024  (256-bit security)
 ```
 
-### 2.6 Number Theoretic Transform (NTT)
+### 2.6 Biến đổi số học (NTT)
 
 NTT là "bí mật" để nhân đa thức trong Ring-LWE hiệu quả — tương đương FFT nhưng trên trường hữu hạn.
 
@@ -244,7 +242,7 @@ Quy trình:
   Tổng: O(n log n) thay vì O(n²)
 ```
 
-### 2.7 Ứng dụng nâng cao: Fully Homomorphic Encryption (FHE)
+### 2.7 Ứng dụng nâng cao: mã hóa đồng cấu hoàn toàn (FHE)
 
 Ring-LWE là nền tảng cho **Mã hóa đồng cấu hoàn toàn** — cho phép tính toán trực tiếp trên dữ liệu đã mã hóa:
 
@@ -258,11 +256,11 @@ Encrypt(m₁) ⊗ Encrypt(m₂) = Encrypt(m₁ × m₂)
 - **Confidential voting**: Bỏ phiếu mà không tiết lộ lựa chọn, nhưng vẫn verify kết quả
 - **Sealed-bid auctions**: Đấu giá kín trên blockchain
 
-> **Lưu ý:** FHE hiện tại còn quá chậm cho production (10,000x - 1,000,000x overhead). Đây là hướng nghiên cứu dài hạn, không nên triển khai trong Phase 1-5.
+> **Lưu ý:** FHE thường có chi phí tính toán đáng kể. Mức chi phí thay đổi theo tham số và workload; các bội số ước lượng trong tài liệu này chưa được đo trên Pluto. Đây là chủ đề nghiên cứu, không phải tính năng production.
 
 ---
 
-## 3. Phần II — Post-Quantum Cryptography (PQC)
+## 3. Phần II — Mật mã hậu lượng tử (PQC)
 
 ### 3.1 Chuẩn NIST PQC (Tháng 8/2024)
 
@@ -275,7 +273,7 @@ NIST đã chính thức công bố 3 chuẩn PQC đầu tiên:
 | **FIPS 205** | SPHINCS+ | **SLH-DSA** | Digital Signature | Hash-based |
 | *FIPS 206* (draft) | FALCON | *FN-DSA* | Digital Signature | NTRU Lattice |
 
-### 3.2 ML-DSA (Dilithium) — Chi tiết cho Blockchain
+### 3.2 ML-DSA (Dilithium): đặc điểm liên quan đến blockchain
 
 ML-DSA là thuật toán chữ ký số phù hợp nhất cho blockchain nhờ cân bằng giữa kích thước, tốc độ và bảo mật.
 
@@ -325,7 +323,7 @@ Verify(pk, message, σ):
   SLH-DSA-128s:      32 bytes   7,856 bytes    7,888 bytes  (82x lớn hơn)
 ```
 
-### 3.3 ML-KEM (Kyber) — Key Encapsulation
+### 3.3 ML-KEM (Kyber): cơ chế đóng gói khóa
 
 Dùng cho trao đổi khóa an toàn (thay thế ECDH):
 
@@ -350,7 +348,7 @@ Quy trình trao đổi khóa:
 - **P2P encryption**: Bảo vệ kênh giao tiếp giữa validators
 - **Encrypted mempool** (tương lai): Mã hóa tx trước khi broadcast
 
-### 3.4 SLH-DSA (SPHINCS+) — Hash-based Signature
+### 3.4 SLH-DSA (SPHINCS+): chữ ký dựa trên hàm băm
 
 Ưu điểm: **không dựa trên giả thuyết lattice** — bảo mật dựa hoàn toàn trên hash function.
 
@@ -367,7 +365,7 @@ Nhược điểm:
 
 **Vai trò trong Pluto:** Dùng làm **fallback signature** — nếu lattice-based bị phát hiện lỗ hổng, chuyển sang SLH-DSA ngay lập tức mà không cần hard fork.
 
-### 3.5 Hybrid Signature Scheme cho Pluto
+### 3.5 Phác thảo chữ ký lai cho Pluto
 
 #### Thiết kế
 
@@ -388,7 +386,7 @@ Cấu trúc transaction mới:
 Tổng overhead thêm: ~3,732 bytes/tx
 ```
 
-#### Verify Logic
+#### Logic xác minh
 
 ```go
 func VerifyHybridSignature(tx *HybridTransaction) error {
@@ -427,7 +425,7 @@ Phase C: "Mandatory PQC" (12+ tháng sau)
   - Hard fork: reject tx không có PQC signature
 ```
 
-### 3.6 PQC Precompile Contract
+### 3.6 Ý tưởng hợp đồng dựng sẵn PQC
 
 Thêm precompile tại địa chỉ cố định để smart contracts có thể verify PQC signatures on-chain:
 
@@ -438,7 +436,7 @@ Precompile Addresses:
   0x0000000000000000000000000000000000000302  → MLKEMEncapsulate(pubkey) returns (ciphertext, sharedSecret)
 ```
 
-#### Gas Cost Estimation
+#### Ước tính gas
 
 ```
 Operation                    Gas Cost (estimated)
@@ -451,7 +449,7 @@ MLKEMEncapsulate-768         2,000 gas
 ecrecover (ECDSA, hiện tại) 3,000 gas     (EIP-150)
 ```
 
-### 3.7 Implementation trong Go
+### 3.7 Thử nghiệm thư viện Go
 
 #### Thư viện có sẵn
 
@@ -474,7 +472,7 @@ ecrecover (ECDSA, hiện tại) 3,000 gas     (EIP-150)
    ⚠️ CGO dependency — phức tạp hơn khi cross-compile
 ```
 
-#### Code mẫu: ML-DSA Sign/Verify với CIRCL
+#### Mã mẫu ký/xác minh ML-DSA bằng CIRCL
 
 ```go
 package pqc
@@ -533,7 +531,7 @@ func DeserializePublicKey(data []byte) (*mode2.PublicKey, error) {
 }
 ```
 
-#### Code mẫu: ML-KEM Key Exchange với Go Standard Library
+#### Mã mẫu trao đổi khóa ML-KEM bằng thư viện chuẩn Go
 
 ```go
 package pqc
@@ -574,9 +572,9 @@ func QuantumSafeKeyExchange() error {
 
 ---
 
-## 4. Phần III — Quantum Random Number Generation (QRNG)
+## 4. Phần III — Sinh số ngẫu nhiên lượng tử (QRNG)
 
-### 4.1 Tại sao PRNG không đủ cho Blockchain?
+### 4.1 PRNG và yêu cầu về tính ngẫu nhiên trong blockchain
 
 ```
 Pseudo-Random Number Generator (PRNG):
@@ -592,7 +590,7 @@ Quantum Random Number Generator (QRNG):
 
 ### 4.2 Nguyên lý vật lý
 
-#### Quantum Vacuum Fluctuations (ANU)
+#### Dao động chân không lượng tử (ANU)
 
 ```
 Beam Splitter Setup:
@@ -608,7 +606,7 @@ Beam Splitter Setup:
   → Chuỗi bit: 01101001 11010100 10110011 ...
 ```
 
-#### Quantum Superposition (IDQuantique)
+#### Chồng chập lượng tử (ID Quantique)
 
 ```
 Single Photon Source → [Beam Splitter] → Detector
@@ -629,9 +627,9 @@ Single Photon Source → [Beam Splitter] → Detector
 | **ID Quantique Quantis** | Hardware (PCIe/USB) | Local driver | 4-240 Mbps | $2,000-$50,000 |
 | **QRNG Open API** | Standard API | REST | Depends | Depends |
 
-### 4.4 Vấn đề hiện tại của Pluto với Randomness
+### 4.4 Câu hỏi về tính ngẫu nhiên cần xem xét trong Pluto
 
-Trong [DESIGN.md](DESIGN.md), Section 5 — EVM-on-CometBFT Compatibility:
+Đối chiếu phần ngữ cảnh EVM/CometBFT trong [tài liệu thiết kế thực thi song song](../design/thiet-ke-thuc-thi-song-song-m4.md):
 
 ```go
 // Hiện tại: KHÔNG AN TOÀN
@@ -646,7 +644,7 @@ blockCtx.Random = &blockHeader.Hash()  // ← Predictable!
 2. VRF truyền thống (dùng ECDSA/Ed25519) bị ảnh hưởng bởi quantum
 3. Chưa có cơ chế aggregate randomness từ nhiều validators
 
-### 4.5 Thiết kế QRNG cho Pluto
+### 4.5 Phác thảo QRNG cho Pluto
 
 #### Kiến trúc: QRNG-Seeded VRF qua ExtendVote
 
@@ -691,7 +689,7 @@ Flow mỗi block:
 4. Commitment: Ngăn validator thay đổi VRF sau khi thấy kết quả khác
 ```
 
-#### Implementation: QRNG Client
+#### Mã khách QRNG dự kiến
 
 ```go
 package qrng
@@ -795,7 +793,7 @@ func fallbackEntropy(n int) ([]byte, error) {
 }
 ```
 
-#### Implementation: QRNG-VRF trong ExtendVote
+#### QRNG-VRF dự kiến trong ExtendVote
 
 ```go
 package consensus
@@ -879,7 +877,7 @@ func (app *App) aggregateRandomness(extensions []VoteExtension) [32]byte {
 }
 ```
 
-### 4.6 Lưu ý quan trọng khi dùng QRNG trong Blockchain
+### 4.6 Lưu ý khi nghiên cứu QRNG trong blockchain
 
 > **Consensus requires determinism.** QRNG chỉ được dùng làm **seed input** cho VRF, KHÔNG BAO GIỜ dùng trực tiếp trong EVM execution.
 
@@ -898,9 +896,9 @@ func (app *App) aggregateRandomness(extensions []VoteExtension) [32]byte {
 
 ---
 
-## 5. Triển khai trong Pluto Blockchain
+## 5. Đề xuất tích hợp (chưa triển khai)
 
-### 5.1 Tổng quan kiến trúc PQC + QRNG
+### 5.1 Phác thảo kiến trúc PQC và QRNG
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -925,7 +923,7 @@ func (app *App) aggregateRandomness(extensions []VoteExtension) [32]byte {
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 5.2 Thay đổi cấu trúc dự án
+### 5.2 Các thay đổi dự kiến trong cấu trúc dự án
 
 ```
 internal/
@@ -952,9 +950,9 @@ internal/
     └── qrng_test.go        ← Tests
 ```
 
-### 5.3 Tích hợp vào ABCI++ Methods
+### 5.3 Các điểm tích hợp ABCI++ dự kiến
 
-#### CheckTx — Verify Hybrid Signature
+#### `CheckTx` — xác minh chữ ký lai
 
 ```go
 func (app *App) CheckTx(ctx context.Context,
@@ -982,7 +980,7 @@ func (app *App) CheckTx(ctx context.Context,
 }
 ```
 
-#### FinalizeBlock — Sử dụng Block Random
+#### `FinalizeBlock` — dùng dữ liệu ngẫu nhiên của block
 
 ```go
 func (app *App) FinalizeBlock(ctx context.Context,
@@ -1002,7 +1000,7 @@ func (app *App) FinalizeBlock(ctx context.Context,
 
 ---
 
-## 6. Đánh giá hiệu năng & Trade-offs
+## 6. Đánh giá hiệu năng và các đánh đổi
 
 ### 6.1 So sánh hiệu năng chữ ký
 
@@ -1015,7 +1013,7 @@ func (app *App) FinalizeBlock(ctx context.Context,
 | FALCON-512 | ~8,000 | ~400 | ~100 | 666 | 897 |
 | SLH-DSA-128s | ~3,000,000 | ~50,000 | ~5,000 | 7,856 | 32 |
 
-### 6.2 Ảnh hưởng đến Transaction Size
+### 6.2 Ảnh hưởng đến kích thước giao dịch
 
 ```
 Current Pluto Tx (ECDSA only):
@@ -1037,7 +1035,7 @@ Hybrid Tx (ECDSA + ML-DSA-44):
     → Vẫn OK cho CometBFT (max 21MB/block mặc định)
 ```
 
-### 6.3 Ảnh hưởng đến Block Time
+### 6.3 Ảnh hưởng đến thời gian tạo block
 
 ```
 Verify 150 tx/block:
@@ -1051,7 +1049,7 @@ QRNG API call:
   → Không block consensus (async với fallback)
 ```
 
-### 6.4 Trade-off Matrix
+### 6.4 Bảng đánh đổi
 
 | Tiêu chí | Chỉ ECDSA | + ML-DSA-44 | + FALCON-512 | + SLH-DSA |
 |---|---|---|---|---|
@@ -1063,9 +1061,9 @@ QRNG API call:
 
 ---
 
-## 7. Lộ trình triển khai
+## 7. Lộ trình nghiên cứu tham khảo
 
-### 7.1 Timeline
+### 7.1 Các giai đoạn tham khảo
 
 ```
                                          Pluto Main Phases
@@ -1103,7 +1101,7 @@ Quantum Module:
   └─────────┘
 ```
 
-### 7.2 Ưu tiên cho sản phẩm KHCN
+### 7.2 Các hướng ưu tiên để tiếp tục nghiên cứu
 
 ```
 PHẢI CÓ (cho đăng ký)          NÊN CÓ                CÓ THỂ SAU
@@ -1128,7 +1126,7 @@ Threat analysis paper           Fallback SLH-DSA       ML-KEM encrypted mempool
 5. V. Lyubashevsky, C. Peikert, O. Regev, "On Ideal Lattices and Learning with Errors Over Rings," Eurocrypt 2010
 6. Alfred Menezes, "Mathematics of Lattice-Based Cryptography," cryptography101.ca
 
-### Thư viện Implementation
+### Thư viện triển khai
 7. Cloudflare CIRCL — github.com/cloudflare/circl
 8. Go Standard Library crypto/mlkem — Go 1.24+
 9. Open Quantum Safe liboqs — github.com/open-quantum-safe/liboqs
@@ -1138,7 +1136,7 @@ Threat analysis paper           Fallback SLH-DSA       ML-KEM encrypted mempool
 11. API3 QRNG — docs.api3.org/qrng
 12. ID Quantique — idquantique.com
 
-### Blockchain + PQC
+### Chuỗi khối và PQC
 13. "Post-Quantum Blockchain Security: A Comprehensive Survey," Frontiers in Blockchain, 2024
 14. "Hybrid Post-Quantum Signatures for EVM Blockchains," CEUR Workshop Proceedings
 15. Ethereum Foundation, "EIP-7693: Post-Quantum Account Abstraction" (draft)
