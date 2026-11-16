@@ -1,6 +1,6 @@
 ﻿# Hướng dẫn kiểm thử và đo hiệu năng
 
-## Harness là gì?
+## Bộ khung kiểm thử (harness) là gì?
 
 Harness là bộ khung dựng dữ liệu thử nghiệm và chạy cùng một workload qua nhiều bộ thực thi. Trong thư mục này, workload thường được chạy trên:
 
@@ -40,7 +40,7 @@ go test -race ./... -count=1
 
 Race detector tìm một số truy cập bộ nhớ đồng thời không được đồng bộ. Kết quả race sạch **không tự chứng minh** hai executor cho cùng kết quả; cần chạy thêm test đối chiếu.
 
-## Test đối chiếu tính đúng đắn
+## Kiểm thử đối chiếu tính đúng đắn
 
 ### Ma trận workload
 
@@ -66,7 +66,7 @@ go test ./test/harness -run '^(TestDifferentialHarnessCounterWorkloadMatchesGeth
 
 Nhóm này kiểm tra các workload nhỏ, riêng biệt để khi lỗi xuất hiện dễ khoanh vùng hơn: Counter, chuyển khoản, replay sau xung đột, ERC-20, AMM, lời gọi lồng nhau và các trường hợp lỗi.
 
-### Test chính sách checkpoint
+### Kiểm thử chính sách checkpoint
 
 ```powershell
 go test ./test/harness -run '^(TestCheckpointPoliciesMatchSequentialAndGethAcrossWorkloads|TestCheckpointPoliciesConcurrentSeededWorkload|TestCheckpointPolicyCSVExport)$' -count=1 -v
@@ -74,7 +74,7 @@ go test ./test/harness -run '^(TestCheckpointPoliciesMatchSequentialAndGethAcros
 
 So sánh các chính sách checkpoint P0, P1, P2 theo chu kỳ và P3 thích nghi với executor tuần tự và geth trên workload đã chọn. Nhóm này kiểm tra tính đúng đắn và số liệu checkpoint; nó không mặc định checkpoint sẽ nhanh hơn.
 
-### Test harness có bắt được lỗi cố ý không?
+### Bộ đối chiếu có phát hiện được sai lệch cố ý không?
 
 ```powershell
 go test ./test/harness -run '^TestHarnessDetectsInjectedMutations$' -count=1 -v
@@ -124,7 +124,7 @@ go test ./test/harness -run '^TestSameContractDisjointAccessListSequentialParall
 
 Đây là trường hợp có khả năng tận dụng song song hơn: các giao dịch gọi cùng một hợp đồng nhưng làm việc trên các storage slot tách biệt. Test so kết quả cuối với tuần tự/geth và in số đo cho các mức giao dịch, worker. Kết quả nhanh hơn chỉ áp dụng cho workload và máy đã đo.
 
-## Benchmark chi tiết của Go
+## Đo hiệu năng chi tiết bằng Go
 
 Benchmark độc lập cho workload chuyển coin, so tuần tự với 1/2/4/8 worker:
 

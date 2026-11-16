@@ -14,10 +14,58 @@ $sequentialRoot = "$comparisonRoot\sequential"
 $parallelRoot = "$comparisonRoot\parallel"
 $absoluteComparisonRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $comparisonRoot))
 
+function Test-PortAvailable {
+    param([int]$Port)
+
+    $listener = $null
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+        $listener.Start()
+        return $true
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($listener) { $listener.Stop() }
+    }
+}
+
+function Test-ComparisonPortOffsets {
+    param([int]$SequentialOffset, [int]$ParallelOffset)
+
+    # Keep these base ports aligned with internal/plutonetwork/setup.go.
+    $portBases = @(27656, 27757, 18545) # P2P, CometBFT RPC, Ethereum RPC
+    foreach ($offset in @($SequentialOffset, $ParallelOffset)) {
+        foreach ($basePort in $portBases) {
+            for ($node = 0; $node -lt 4; $node++) {
+                if (-not (Test-PortAvailable ($basePort + $offset + $node))) { return $false }
+            }
+        }
+    }
+    return $true
+}
+
+# A small offset can overlap another service's range: e.g. P2P +100 is
+# 27756-27759, which collides with the default network's CometBFT RPC ports.
+$sequentialPortOffset = -1
+$parallelPortOffset = -1
+for ($candidate = 1000; $candidate -le 30000; $candidate += 20) {
+    if (Test-ComparisonPortOffsets -SequentialOffset $candidate -ParallelOffset ($candidate + 20)) {
+        $sequentialPortOffset = $candidate
+        $parallelPortOffset = $candidate + 20
+        break
+    }
+}
+if ($sequentialPortOffset -lt 0) {
+    throw "Could not find two free four-validator port ranges for the comparison. Stop other Pluto test networks or free their ports, then retry."
+}
+Write-Host "Selected free port offsets: sequential=$sequentialPortOffset; parallel=$parallelPortOffset"
+
 Push-Location $repoRoot
 try {
-    .\scripts\setup-pluto-network.ps1 -Root $sequentialRoot -PortOffset 100
-    .\scripts\setup-pluto-network.ps1 -Root $parallelRoot -PortOffset 120
+    .\scripts\setup-pluto-network.ps1 -Root $sequentialRoot -PortOffset $sequentialPortOffset
+    .\scripts\setup-pluto-network.ps1 -Root $parallelRoot -PortOffset $parallelPortOffset
 
     Write-Host "Running $Transactions transfers on a fresh four-validator sequential network..."
     .\scripts\start-pluto-network.ps1 -Root $sequentialRoot -Executor sequential -Workers 1

@@ -1,7 +1,6 @@
 
 /docs/*
-!/docs/foundry-e2e.md
-!/docs/metamask-local-checklist.md
+!/docs/*.md
 !/docs/Pluto_Project_Guide_VI.docx
 /.agents
 /.vscode

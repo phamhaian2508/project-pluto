@@ -1,28 +1,14 @@
-# M5.1 spike 1C: minimal interpreter
+# Thử nghiệm M5.1 1C: bộ thông dịch tối giản
 
-This spike is isolated from Pluto production and reuses the same contract as
-spikes 1A/1B. It implements exactly **7 opcodes**: `PUSH0`, `PUSH1`, `ADD`,
-`SLOAD`, `SSTORE`, `MSTORE`, and `RETURN`.
+Spike này tách khỏi production Pluto và dùng cùng hợp đồng mẫu với spike 1A/1B. Nó chỉ cài đúng **7 opcode**: `PUSH0`, `PUSH1`, `ADD`, `SLOAD`, `SSTORE`, `MSTORE` và `RETURN`.
 
-The checkpoint owns the PC, stack, memory, remaining gas, storage writes, and
-warm-storage set. A test pauses immediately after `SSTORE`, restores a new
-machine, and verifies output, storage, and exact remaining gas against both an
-uninterrupted mini-interpreter run and geth v1.16.8.
+Checkpoint giữ PC, stack, memory, gas còn lại, các lần ghi storage và tập storage đã làm nóng. Test tạm dừng ngay sau `SSTORE`, khôi phục một máy mới rồi đối chiếu đầu ra, storage và gas còn lại chính xác với lần chạy liên tục của mini-interpreter và geth v1.16.8.
 
-## Complexity and maintenance risk
+## Độ phức tạp và rủi ro bảo trì
 
-- The implementation is 299 lines (273 non-blank), plus 76 test lines. Its
-  execution core is one loop and one switch with exactly seven opcode cases;
-  the checkpoint carries six state groups (PC, stack, memory, gas, writes, and
-  warm slots).
-- Exact gas for this sample requires EIP-2929 warm/cold storage accounting,
-  EIP-2200 `SSTORE` costs, and memory expansion cost. State correctness requires
-  a separate write overlay and a warm-slot set in every checkpoint.
-- It does not implement refunds, committed-state history, hard-fork selection,
-  jumps, calls, logs, revert, create, precompiles, access-list input, or any
-  opcode outside the seven listed above.
-- Extending it would mean independently maintaining consensus-critical EVM
-  semantics as geth and hard-fork rules evolve. This is the highest-risk option
-  despite the small proof-of-concept.
+- Phần cài đặt có 299 dòng (273 dòng không trắng), kèm 76 dòng test. Vòng lặp thực thi có đúng bảy nhánh opcode; checkpoint giữ sáu nhóm trạng thái: PC, stack, memory, gas, các lần ghi và storage đã làm nóng.
+- Để tính gas đúng trong mẫu phải xử lý EIP-2929 (storage nóng/lạnh), chi phí `SSTORE` của EIP-2200 và chi phí mở rộng memory. Trạng thái cần overlay ghi riêng và tập slot nóng trong mỗi checkpoint.
+- Spike không cài refund, lịch sử committed state, lựa chọn hard fork, jump, call, log, revert, create, precompile, đầu vào access list hay opcode ngoài danh sách bảy opcode.
+- Mở rộng hướng này đồng nghĩa tự duy trì ngữ nghĩa EVM quan trọng cho đồng thuận khi geth và quy tắc hard fork thay đổi. Đây là phương án rủi ro cao nhất dù bản chứng minh khái niệm nhỏ.
 
-No production executor integration or M5.2 work is included.
+> Spike không tích hợp vào executor production và không thuộc luồng xử lý giao dịch của node.

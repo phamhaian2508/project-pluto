@@ -1,4 +1,4 @@
-# M5.1 spike 1A: fork vòng lặp interpreter của geth
+# Thử nghiệm M5.1 1A: tạo nhánh vòng lặp bộ thông dịch geth
 
 Spike này tách khỏi production và chỉ trả lời câu hỏi khả thi: nếu sở hữu vòng
 lặp interpreter thì Pluto có thể dừng tại ranh giới opcode, sao chép trạng thái
