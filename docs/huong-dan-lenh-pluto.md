@@ -114,9 +114,33 @@ Hoặc cố định 4 worker:
 .\scripts\start-pluto-network.ps1 -Executor parallel -Workers 4
 ~~~
 
-Tất cả validator phải dùng cùng binary và chế độ executor. Script chạy node nền, log ở .pluto-network\logs. Ethereum RPC validator 1 là http://127.0.0.1:18545; CometBFT RPC là http://127.0.0.1:27757. Validator còn lại dùng các cổng kế tiếp.
+### 3.4. Chạy bốn validator song song với checkpoint
 
-### 3.4. Dashboard, dừng và khởi động lại validator
+Checkpoint được tạo riêng trong RAM của executor ở từng validator để hỗ trợ resume khi một lần thực thi lạc quan phải chạy lại. Nó không phải block, không được phát tán qua CometBFT và không được lưu thành checkpoint dùng chung trong PebbleDB. Mỗi validator tự tạo checkpoint khi thực thi cùng giao dịch trong block.
+
+Ví dụ dùng P1 trên cả bốn validator:
+
+~~~powershell
+.\scripts\start-pluto-network.ps1 -Executor parallel -Workers auto -CheckpointPolicy p1
+~~~
+
+P2 chụp theo chu kỳ 100 opcode:
+
+~~~powershell
+.\scripts\start-pluto-network.ps1 -Executor parallel -Workers auto -CheckpointPolicy p2 -CheckpointInterval 100
+~~~
+
+P3:
+
+~~~powershell
+.\scripts\start-pluto-network.ps1 -Executor parallel -Workers auto -CheckpointPolicy p3
+~~~
+
+P0 là mặc định, không tạo checkpoint. Mọi validator trong cùng mạng cần cùng binary, executor, worker setting, checkpoint policy và interval. Script truyền cùng cờ cho từng node và từ chối khởi chạy nếu phát hiện validator đang chạy với cấu hình khác. Muốn đổi chính sách, dừng cả mạng trước rồi khởi chạy lại tất cả node với cùng cờ. `CheckpointInterval` chỉ có tác dụng với P2.
+
+Script chạy node nền, log ở `.pluto-network\logs`. Ethereum RPC validator 1 là `http://127.0.0.1:18545`; CometBFT RPC là `http://127.0.0.1:27757`. Validator còn lại dùng các cổng kế tiếp.
+
+### 3.5. Dashboard, dừng và khởi động lại validator
 
 ~~~powershell
 .\scripts\pluto-network-dashboard.ps1
@@ -126,8 +150,10 @@ Dashboard theo dõi chiều cao block, AppHash ở cùng chiều cao và số li
 
 ~~~powershell
 .\scripts\stop-pluto-network.ps1 -Node validator2
-.\scripts\start-pluto-network.ps1 -Node validator2
+.\scripts\start-pluto-network.ps1 -Node validator2 -Executor parallel -Workers auto -CheckpointPolicy p1
 ~~~
+
+Khi chạy lại một validator riêng, phải dùng đúng cấu hình đang chạy trên các validator còn lại.
 
 Dừng cả mạng, giữ nguyên dữ liệu:
 
@@ -137,7 +163,7 @@ Dừng cả mạng, giữ nguyên dữ liệu:
 
 Bốn validator trên cùng máy vẫn cùng phụ thuộc một máy và một miền quản trị; đây là mạng thử nghiệm cục bộ.
 
-### 3.5. Gửi giao dịch tới validator 1
+### 3.6. Gửi giao dịch tới validator 1
 
 ~~~powershell
 $env:PLUTO_ETH_RPC_URL = "http://127.0.0.1:18545"
@@ -162,7 +188,7 @@ go run ./cmd/plutoload -root .pluto-network -count 50 -out .\.pluto-network\load
 
 plutosmoke kiểm tra giao dịch/receipt/trạng thái các validator. plutoload gửi workload chuyển tiền và lưu số liệu JSON.
 
-### 3.6. So sánh tuần tự với song song ở cấp mạng
+### 3.7. So sánh tuần tự với song song ở cấp mạng
 
 ~~~powershell
 .\scripts\compare-executors.ps1 -Transactions 50 -Samples 5
