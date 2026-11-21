@@ -104,6 +104,7 @@ type BlockResult struct {
 }
 
 type Executor interface {
+	// ExecuteBlock chạy giao dịch trên state view và trả kết quả cùng các writes; App/ABCI mới commit chúng.
 	ExecuteBlock(base StateReader, env BlockEnv, txs []*types.Transaction) (*BlockResult, error)
 }
 
@@ -134,6 +135,7 @@ func (e *SequentialExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []
 		env.BaseFee = new(big.Int)
 	}
 
+	// BlockContext cung cấp cho opcode EVM các dữ liệu cố định của block đang xử lý.
 	blockContext := vm.BlockContext{
 		CanTransfer: core.CanTransfer,
 		Transfer:    core.Transfer,
@@ -153,6 +155,7 @@ func (e *SequentialExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []
 	blockResult := &BlockResult{Results: make([]TxResult, len(txs)), Writes: make(map[string][]byte)}
 	var blockLogIndex uint
 
+	// Giữ nguyên thứ tự trong block: giao dịch sau quan sát state thành công của giao dịch trước.
 	for i, tx := range txs {
 		tr := TxResult{Index: i}
 		if tx == nil {
@@ -174,6 +177,7 @@ func (e *SequentialExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []
 		}
 		evmEnv.SetTxContext(core.NewEVMTxContext(msg))
 		logStart := len(stateDB.GetLogs())
+		// Snapshot cho phép hoàn tác state nếu ApplyMessage gặp lỗi ở cấp xử lý giao dịch.
 		snap := stateDB.Snapshot()
 		result, err := core.ApplyMessage(evmEnv, msg, gasPool)
 		if dbErr := stateDB.Err(); dbErr != nil {
@@ -189,6 +193,7 @@ func (e *SequentialExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []
 			blockResult.Results[i] = tr
 			continue
 		}
+		// Finalise chốt các thay đổi của giao dịch thành công trước khi chạy giao dịch kế tiếp.
 		stateDB.Finalise(true)
 		if dbErr := stateDB.Err(); dbErr != nil {
 			return nil, fmt.Errorf("tx %d state db error after finalise: %w", i, dbErr)
@@ -223,6 +228,7 @@ func (e *SequentialExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []
 	if err != nil {
 		return nil, fmt.Errorf("collect state writes: %w", err)
 	}
+	// AppHash của Pluto được tính từ state ứng dụng; đây không phải Ethereum Merkle Patricia root.
 	copy(blockResult.StateRoot[:], stateDB.ComputeAppHash(env.PreviousRoot))
 	blockResult.Writes = writes
 	return blockResult, nil

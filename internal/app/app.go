@@ -480,6 +480,7 @@ func (app *App) ConfigureCheckpoints(config evm.CheckpointConfig) error {
 
 // Info trả về trạng thái bền vững gần nhất để CometBFT bắt tay khi mở lại.
 func (app *App) Info(ctx context.Context, req *abci.InfoRequest) (*abci.InfoResponse, error) {
+	// CometBFT gọi Info khi bắt tay hoặc khôi phục; Pluto trả chiều cao và AppHash đã lưu.
 	if app.logger != nil {
 		app.logger.Info("CometBFT Handshake received",
 			"comet_version", req.Version,
@@ -631,6 +632,8 @@ func (app *App) validateProposalTxExec(
 
 // PrepareProposal lọc tx hợp lệ mức protocol trên bản state tạm từ H-1 và tôn trọng giới hạn MaxTxBytes.
 func (app *App) PrepareProposal(_ context.Context, req *abci.PrepareProposalRequest) (*abci.PrepareProposalResponse, error) {
+	// Mô phỏng lần lượt trên state tạm để chỉ chọn giao dịch hợp lệ theo protocol và vừa giới hạn byte.
+	// Đây là bước chuẩn bị đề xuất; các thay đổi chưa được ghi vào Pebble.
 	expectedHeight := int64(app.CurrentHeight()) + 1
 	if req.Height != expectedHeight {
 		return nil, fmt.Errorf("unexpected PrepareProposal height %d, want %d", req.Height, expectedHeight)
@@ -673,6 +676,8 @@ func (app *App) PrepareProposal(_ context.Context, req *abci.PrepareProposalRequ
 
 // ProcessProposal kiểm tra tĩnh toàn bộ req.Txs trước (chống DoS CPU), rồi mới chạy EVM xác định theo thứ tự.
 func (app *App) ProcessProposal(_ context.Context, req *abci.ProcessProposalRequest) (*abci.ProcessProposalResponse, error) {
+	// Mọi validator kiểm tra cùng đề xuất: kiểm tra tĩnh trước, rồi mô phỏng EVM theo thứ tự giao dịch.
+	// Cách làm này giúp các validator quyết định accept/reject dựa trên cùng quy tắc và state nền.
 	expectedHeight := int64(app.CurrentHeight()) + 1
 	if req.Height != expectedHeight {
 		if app.logger != nil {
@@ -725,6 +730,7 @@ func (app *App) ProcessProposal(_ context.Context, req *abci.ProcessProposalRequ
 
 // FinalizeBlock thực thi các giao dịch trong khối bằng bộ thực thi đã cấu hình.
 func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockRequest) (*abci.FinalizeBlockResponse, error) {
+	// CometBFT chỉ gọi đến đây sau khi đã chọn block; kết quả EVM được giữ pending đến Commit.
 	if app.pendingBlock != nil {
 		return nil, fmt.Errorf("cannot finalize height %d: height %d is not committed", req.Height, app.pendingBlock.height)
 	}
@@ -743,6 +749,7 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 	processor := app.getTxProcessor()
 	transactions := make([]*types.Transaction, len(req.Txs))
 	preResults := make([]*abci.ExecTxResult, len(req.Txs))
+	// Giải mã theo chỉ số trong block để lỗi của một giao dịch vẫn gắn đúng ExecTxResult.
 	for i, txBytes := range req.Txs {
 		ethTx, err := processor.DecodeTx(txBytes)
 		if err != nil {
@@ -801,6 +808,7 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		}
 	}
 	executionStarted := time.Now()
+	// Cả executor tuần tự và song song chỉ tính kết quả/state delta; chúng không tự tạo block.
 	blockResult, err := app.executor.ExecuteBlock(stateDB, blockEnv, transactions)
 	if err != nil {
 		return nil, fmt.Errorf("execute block: %w", err)
@@ -832,6 +840,7 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 		}
 		app.logger.Info("block executor metrics", "height", req.Height, "executor", app.executorMode, "workers", workerMode, "metrics", blockResult.Metrics)
 	}
+	// Chuyển kết quả EVM thành định dạng ABCI mà CometBFT dùng cho các giao dịch trong block.
 	for i, result := range blockResult.Results {
 		if preResults[i] != nil {
 			txResults[i] = preResults[i]
@@ -856,6 +865,7 @@ func (app *App) FinalizeBlock(ctx context.Context, req *abci.FinalizeBlockReques
 
 	// Chuẩn bị trạng thái và siêu dữ liệu. Commit lưu tất cả trong cùng một thao tác.
 	pendingAppHash := append([]byte(nil), blockResult.StateRoot[:]...)
+	// Giữ writes và AppHash ở pending; chỉ Commit mới ghi chúng thành trạng thái bền vững.
 	app.pendingBlock = &pendingBlock{
 		height:    req.Height,
 		appHash:   pendingAppHash,
@@ -908,6 +918,7 @@ func (app *App) Commit(ctx context.Context, req *abci.CommitRequest) (*abci.Comm
 		return nil, fmt.Errorf("stage block hash: %w", err)
 	}
 	// giữ metaMu.Lock() bọc trọn WriteSync + cập nhật head để đóng cửa sổ torn-read với RPC/NewSnapshot
+	// Khóa xuyên suốt WriteSync và cập nhật cache để RPC không thấy chiều cao/AppHash lệch nhau.
 	app.metaMu.Lock()
 	if err := batch.WriteSync(); err != nil {
 		app.metaMu.Unlock()
@@ -929,6 +940,7 @@ func (app *App) Commit(ctx context.Context, req *abci.CommitRequest) (*abci.Comm
 
 // CheckTx kiểm tra giao dịch trước khi đưa vào vùng chờ giao dịch.
 func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.CheckTxResponse, error) {
+	// CheckTx sàng lọc giao dịch gửi vào mempool; giao dịch vẫn sẽ được kiểm tra khi tạo/kiểm tra block.
 	if len(req.Tx) == 0 {
 		return &abci.CheckTxResponse{
 			Code: 1,
@@ -1038,6 +1050,7 @@ func (app *App) CheckTx(ctx context.Context, req *abci.CheckTxRequest) (*abci.Ch
 }
 
 func (app *App) Query(ctx context.Context, req *abci.QueryRequest) (*abci.QueryResponse, error) {
+	// Query đọc dữ liệu đã commit từ state; nó không thực thi giao dịch và không ghi thay đổi.
 	stateDB := evm.NewPebbleStateDB(app.db)
 	addr := common.BytesToAddress(req.Data)
 

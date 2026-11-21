@@ -1,0 +1,2 @@
+# Test fixture manifests verify SHA-256 over exact file bytes, so preserve their line endings.
+/testdata/** -text
