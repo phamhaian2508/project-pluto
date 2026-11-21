@@ -253,7 +253,9 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Khởi tạo Node
+	// Nối CometBFT với ứng dụng Pluto qua ABCI:
+	// NewLocalClientCreator(myApp) làm cho CometBFT gọi các phương thức ABCI trên myApp
+	// như CheckTx, PrepareProposal, ProcessProposal, FinalizeBlock và Commit.
 	node, err := cmtnode.NewNode(
 		ctx,
 		config,
@@ -274,6 +276,8 @@ func main() {
 	if err := node.Start(); err != nil {
 		panic(fmt.Errorf("failed to start node: %v", err))
 	}
+	// RPC Ethereum đọc trạng thái từ myApp; khi gửi giao dịch, broadcaster này
+	// chuyển raw transaction vào chính CometBFT node thay vì tự thực thi giao dịch.
 	ethereumRPC, err := ethrpc.New(myApp, cmtrpclocal.New(node))
 	if err != nil {
 		panic(fmt.Errorf("failed to create Ethereum JSON-RPC server: %w", err))

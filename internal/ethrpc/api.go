@@ -73,16 +73,21 @@ func (api *EthAPI) SendRawTransaction(ctx context.Context, raw hexutil.Bytes) (c
 	if api.broadcaster == nil {
 		return common.Hash{}, errors.New("transaction broadcasting is unavailable")
 	}
+	// eth_sendRawTransaction nhận giao dịch đã ký ở ngoài node. Pluto giữ nguyên
+	// bytes Ethereum và gửi chúng đến CometBFT; ở bước này CometBFT chỉ chạy CheckTx.
 	result, err := api.broadcaster.BroadcastTxSync(ctx, cmttypes.Tx(raw))
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("broadcast transaction: %w", err)
 	}
+	// Code != 0 nghĩa là mempool/CheckTx từ chối giao dịch. Code == 0 chỉ xác nhận
+	// giao dịch được nhận vào mempool, KHÔNG khẳng định giao dịch đã vào block.
 	if result.Code != 0 {
 		if result.Log == "" {
 			result.Log = fmt.Sprintf("CheckTx rejected transaction with code %d", result.Code)
 		}
 		return common.Hash{}, errors.New(result.Log)
 	}
+	// Hash trả về là Ethereum transaction hash = Keccak256(raw transaction).
 	return crypto.Keccak256Hash(raw), nil
 }
 
@@ -413,6 +418,7 @@ func (api *EthAPI) Call(_ context.Context, args TransactionArgs, block *gethrpc.
 	if err != nil {
 		return nil, err
 	}
+	// eth_call mô phỏng trên trạng thái đã commit, không phát giao dịch và không ghi DB.
 	result, err := api.app.Call(args.callArgs(baseFee))
 	if err != nil {
 		return nil, err

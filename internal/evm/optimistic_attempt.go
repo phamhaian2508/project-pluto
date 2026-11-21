@@ -75,6 +75,7 @@ const (
 // ảnh hưởng trạng thái theo thứ tự giao dịch chuẩn. Lần chạy dùng dữ liệu cũ bị
 // loại bỏ và chạy lại trên trạng thái mới nhất trước khi được chốt.
 func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*types.Transaction) (*BlockResult, error) {
+	// Executor này tính kết quả của block sau khi CometBFT giao block cho ABCI; nó không tự tạo block.
 	totalStarted := time.Now()
 	stateDB, ok := base.(*PebbleStateDB)
 	if !ok {
@@ -102,6 +103,7 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 	// Giữ đường xử lý chuyển khoản đã được chứng nhận, ít cấp phát cho các khối
 	// chỉ gồm giao dịch S không xung đột. Giao dịch EVM thông thường dùng các lần
 	// chạy lạc quan cô lập ở bên dưới.
+	// Nhận diện lô chuyển khoản EOA đơn giản để dùng đường tối ưu; giao dịch hợp đồng đi qua EVM tổng quát.
 	analyzeStart := time.Now()
 	allStatic := len(txs) > 0
 	staticAccesses := make([]staticTransfer, len(txs))
@@ -160,6 +162,7 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 	}
 	result := &BlockResult{Results: make([]TxResult, len(txs)), Writes: make(map[string][]byte), Metrics: make(map[string]float64)}
 	var checkpointMetrics CheckpointMetrics
+	// MVMemory theo dõi phiên bản các khóa đọc/ghi để phát hiện attempt dùng state cũ.
 	versions := NewMVMemory()
 	hotKeys := make(map[MVKey]struct{})
 	remainingGas := env.GasLimit
@@ -180,6 +183,7 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 	if waveSize < workers || waveSize < 1 { // Ngăn phép nhân gây tràn số.
 		waveSize = workers
 	}
+	// Các wave giới hạn số lần chạy đồng thời; bước xác thực/áp dụng vẫn giữ thứ tự giao dịch gốc.
 	for start := 0; start < len(txs); {
 		end := start + waveSize
 		if end > len(txs) {
@@ -213,6 +217,7 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 			go func() {
 				defer wg.Done()
 				for item := range jobs {
+					// Mỗi worker chạy trên overlay riêng và chỉ tạo delta, chưa sửa state chuẩn.
 					attempt, err := executeOptimisticAttemptConfigured(stateDB, versions, e.ChainConfig, e.ChainID, env, wave[item.index], start+item.index, 1, waveRemainingGas, e.Checkpoints, waveHotKeys, nil)
 					if err != nil {
 						// giữ nguyên lỗi hệ thống/DB để bộ phân giải trả lỗi tất định theo thứ tự tx
@@ -237,6 +242,7 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 		// Bộ phân giải là nơi duy nhất ghi vào StateDB chuẩn và luôn xử lý theo
 		// thứ tự ban đầu trong khối, bất kể worker hoàn tất theo thứ tự nào.
 		waveConflicts := 0
+		// Chỉ bộ phân giải dưới đây cập nhật state chuẩn và luôn duyệt theo thứ tự trong block.
 		for i, speculative := range attempts {
 			tx := wave[i]
 			if attemptErrs[i] != nil {
@@ -251,6 +257,7 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 				mustRetry = true
 			}
 			validateStart := time.Now()
+			// Chấp nhận attempt chỉ khi các phiên bản đã đọc vẫn khớp với state mới nhất.
 			versionConflict := !versions.Validate(speculative.readVersion)
 			if versionConflict {
 				mustRetry = true
@@ -275,6 +282,7 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 				if retryErr != nil {
 					return nil, fmt.Errorf("retry transaction %d: %w", start+i, retryErr)
 				}
+				// Nếu có xung đột, chạy lại giao dịch trên state đã nhận các giao dịch đứng trước.
 				accepted = recovery.attempt
 				recordAttemptCheckpoints(&checkpointMetrics, accepted)
 				retries += float64(recovery.retries)
@@ -312,6 +320,7 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 				return nil, fmt.Errorf("transaction %d consumed %d gas with %d remaining", start+i, accepted.result.GasUsed, remainingGas)
 			}
 			resolveStart := time.Now()
+			// Chỉ delta đã xác thực mới được nhập vào state chuẩn.
 			if err := stateDB.ApplyPendingWrites(accepted.delta); err != nil {
 				return nil, fmt.Errorf("apply transaction %d delta: %w", start+i, err)
 			}
@@ -333,6 +342,7 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 	}
 
 	prepareStart := time.Now()
+	// Tính AppHash từ state cuối; việc ghi bền vững được ABCI Commit thực hiện sau đó.
 	copy(result.StateRoot[:], stateDB.ComputeAppHash(env.PreviousRoot))
 	writes, err := stateDB.PendingWrites()
 	if err != nil {
