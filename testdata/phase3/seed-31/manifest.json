@@ -1,0 +1,65 @@
+{
+  "cases": {
+    "merkle-early": {
+      "blocks": 6,
+      "dir": "merkle-early",
+      "firstTxHash": "0xced7b2a7779dc0e06347aba08adc86717959f219ed823e34e2953877845c8c14",
+      "lastTxHash": "0xbbc5ca62da9d453952cec98fdb45e19dbb7f6485f3dcef968dbe2495875aa406",
+      "manifestSha256": "0xa284d99073c48b46bccee5faf0f7d8ff646a55b8b9c79e8c6a9b49e66d9534c2",
+      "runtimeCodeHash": "0x87ef413dbc5ec0d32c8d5008b963562ed8c295df8b6ee738a3537362be891826",
+      "totalGasUsed": 17174960,
+      "totalTxs": 384
+    },
+    "merkle-independent-early": {
+      "blocks": 6,
+      "dir": "merkle-independent-early",
+      "firstTxHash": "0x8e3a32c9741659a4d3018d1ece6598b8b6ad8174faa29d9f7f865181b6292a22",
+      "lastTxHash": "0xdd8154b14409734fd646edf3cdb983328f7a4598513da8f2aa165415d513292c",
+      "manifestSha256": "0x173e1d0108711357e8b2d25cfbe5eb80178600dd3306acfe2ce95c9010b57688",
+      "runtimeCodeHash": "0x87ef413dbc5ec0d32c8d5008b963562ed8c295df8b6ee738a3537362be891826",
+      "totalGasUsed": 17997116,
+      "totalTxs": 384
+    },
+    "merkle-independent-late": {
+      "blocks": 6,
+      "dir": "merkle-independent-late",
+      "firstTxHash": "0xe300f1cc3f42485450397fca2c9775a756c331dd624f142102b1ba980d838432",
+      "lastTxHash": "0x1c918fa9bc4ced913424cb0d8c9fd50d545486eb0b9ac0cbd15000fc08718323",
+      "manifestSha256": "0x2dbd1740661065ee0f95f1071479e10c4d473ca16bbd09fef5c884b845d2a4a0",
+      "runtimeCodeHash": "0x87ef413dbc5ec0d32c8d5008b963562ed8c295df8b6ee738a3537362be891826",
+      "totalGasUsed": 18005180,
+      "totalTxs": 384
+    },
+    "merkle-late": {
+      "blocks": 6,
+      "dir": "merkle-late",
+      "firstTxHash": "0x6d77088e37642f870e02691b74e195c08e783a4e3ad4daadc1a62842f814d546",
+      "lastTxHash": "0x63f3bcd7cc734da70d759376b7d4d76ab2bd3a04cbeec033138f21511a64e8ad",
+      "manifestSha256": "0x5f03f3a39301220a6f666c5067e80b4651cbe8a65a873ddbd122995b75ae4e61",
+      "runtimeCodeHash": "0x87ef413dbc5ec0d32c8d5008b963562ed8c295df8b6ee738a3537362be891826",
+      "totalGasUsed": 17183024,
+      "totalTxs": 384
+    },
+    "merkle-mixed": {
+      "blocks": 6,
+      "dir": "merkle-mixed",
+      "firstTxHash": "0x3adc98d50cc1f6456527dcd460bc39d072a924b4e5e71b592f0468c022eab5aa",
+      "lastTxHash": "0x60265f13c1048ba1a55ea034cf6362fd760b9884915a96a1bca18f62c2f32d87",
+      "manifestSha256": "0x67e09938241aeac86f03a7b3c7b843e6e7e4b24b913be07b817f44013ce2d0c9",
+      "runtimeCodeHash": "0x87ef413dbc5ec0d32c8d5008b963562ed8c295df8b6ee738a3537362be891826",
+      "totalGasUsed": 17452136,
+      "totalTxs": 384
+    }
+  },
+  "chainId": 1337,
+  "contractAddress": "0x000000000000000000000000000000000000d001",
+  "evmVersion": "shanghai",
+  "fork": "Shanghai",
+  "merkleRoot": "0x6050dc6a0db5ff20ee8ab24b6a3cc74e8e3f6a21cec121cd2e90dc5d9a0d6825",
+  "metadataBytecodeHash": "none",
+  "optimizerEnabled": false,
+  "runtimeCodeHash": "0x87ef413dbc5ec0d32c8d5008b963562ed8c295df8b6ee738a3537362be891826",
+  "seed": 31,
+  "solcFullVersion": "0.8.24+commit.e11b9ed9.Linux.g++",
+  "solidityVersion": "0.8.24"
+}

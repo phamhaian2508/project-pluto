@@ -1,0 +1,22 @@
+{
+  "blocks": [
+    "blocks/block-01",
+    "blocks/block-02"
+  ],
+  "caseId": "invalid-block",
+  "chainId": 1337,
+  "expectedReject": {
+    "blockIndex": 1,
+    "blockNumber": 2,
+    "txIndex": 1,
+    "category": "nonce_too_high",
+    "expectedCommittedHeight": 1
+  },
+  "inputSha256": {
+    "alloc.json": "0x5f8910bcb8a2d01ab702314125efb1209d26ede6492aacb700e798cb1892dcd6",
+    "blocks/block-01/env.json": "0x86b0728eb4cda16f2d6fd8fd15eef4ce9a408f28463edf092bc4b224d5c9d24b",
+    "blocks/block-01/txs.json": "0x14641814aa3a51fbdef1eda601ac523b4ffe1aeb309694296a610f8cd2fe13a4",
+    "blocks/block-02/env.json": "0xa1569f13eb3268da6ff66eff735fcad57e646d029f1a4fa1616c90c9eaf916f7",
+    "blocks/block-02/txs.json": "0xe14108b152c9ed471f0aec1d6752c23e7a5884fe155179945f0d33884fd0c7e0"
+  }
+}

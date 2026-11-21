@@ -27,14 +27,28 @@ type EthAPI struct {
 	broadcaster TxBroadcaster
 }
 
-type NetAPI struct{}
+type NetAPI struct {
+	app *app.App
+}
 type Web3API struct{}
 
-func (*NetAPI) Version() string           { return rpcChainID.String() }
+func (api *EthAPI) chainID() *big.Int {
+	if api != nil && api.app != nil {
+		return api.app.ChainID()
+	}
+	return new(big.Int).Set(rpcChainID)
+}
+
+func (api *NetAPI) Version() string {
+	if api != nil && api.app != nil {
+		return api.app.ChainID().String()
+	}
+	return rpcChainID.String()
+}
 func (*NetAPI) Listening() bool           { return true }
 func (*NetAPI) PeerCount() hexutil.Uint   { return 0 }
 func (*Web3API) ClientVersion() string    { return "pluto/v1" }
-func (api *EthAPI) ChainId() *hexutil.Big { return (*hexutil.Big)(new(big.Int).Set(rpcChainID)) }
+func (api *EthAPI) ChainId() *hexutil.Big { return (*hexutil.Big)(api.chainID()) }
 func (api *EthAPI) BlockNumber() hexutil.Uint64 {
 	return hexutil.Uint64(api.app.CurrentHeight())
 }
@@ -256,7 +270,7 @@ func (api *EthAPI) GetBlockByNumber(number gethrpc.BlockNumber, fullTransactions
 	if err != nil {
 		return nil, err
 	}
-	if !found && resolved == 0 && api.app.CurrentHeight() == 0 {
+	if !found && resolved == 0 {
 		block = api.genesisBlock()
 		found = true
 	}
@@ -271,9 +285,11 @@ func (api *EthAPI) GetBlockByHash(hash common.Hash, fullTransactions bool) (map[
 	if err != nil {
 		return nil, err
 	}
-	if !found && api.app.CurrentHeight() == 0 && hash == api.genesisBlock().Hash {
-		block = api.genesisBlock()
-		found = true
+	if !found {
+		if genesis := api.genesisBlock(); hash == genesis.Hash {
+			block = genesis
+			found = true
+		}
 	}
 	if !found {
 		return nil, nil
@@ -304,7 +320,7 @@ func (api *EthAPI) GetTransactionByHash(hash common.Hash) (*RPCTransaction, erro
 	if err != nil || !found {
 		return nil, err
 	}
-	transaction, err := decodeRPCTransaction(stored)
+	transaction, err := decodeRPCTransaction(stored, api.chainID())
 	if err != nil {
 		return nil, err
 	}
@@ -497,12 +513,12 @@ type RPCTransaction struct {
 	S                    *hexutil.Big    `json:"s"`
 }
 
-func decodeRPCTransaction(stored *app.EthereumTransaction) (*RPCTransaction, error) {
+func decodeRPCTransaction(stored *app.EthereumTransaction, chainID *big.Int) (*RPCTransaction, error) {
 	var transaction types.Transaction
 	if err := transaction.UnmarshalBinary(stored.Raw); err != nil {
 		return nil, err
 	}
-	from, err := types.Sender(types.LatestSignerForChainID(rpcChainID), &transaction)
+	from, err := types.Sender(types.LatestSignerForChainID(chainID), &transaction)
 	if err != nil {
 		return nil, err
 	}
@@ -551,7 +567,8 @@ func (api *EthAPI) rpcBlock(block *app.EthereumBlock, fullTransactions bool) (ma
 }
 
 func (api *EthAPI) genesisBlock() *app.EthereumBlock {
-	stateRoot := api.app.CurrentAppHash()
+	// cố định theo GenesisAppHash thay vì CurrentAppHash để block 0 không đổi khi chain tiến thêm
+	stateRoot := api.app.GenesisAppHash()
 	return &app.EthereumBlock{
 		Number: 0, Hash: crypto.Keccak256Hash([]byte("pluto-genesis-v1"), stateRoot.Bytes()),
 		GasLimit: 30000000, StateRoot: stateRoot, Transactions: []common.Hash{},
@@ -577,21 +594,29 @@ func (api *EthAPI) requireLatest(block *gethrpc.BlockNumberOrHash) error {
 		return nil
 	}
 	if number, ok := block.Number(); ok {
+		switch number {
+		case gethrpc.LatestBlockNumber, gethrpc.PendingBlockNumber, gethrpc.SafeBlockNumber, gethrpc.FinalizedBlockNumber:
+			return nil
+		}
 		resolved, err := api.resolveBlockNumber(number)
 		if err != nil {
 			return err
 		}
-		// Ví có thể yêu cầu đọc trạng thái tại số khối vừa quan sát được.
-		// Pluto hiện chỉ giữ ảnh chụp trạng thái mới nhất, nên dùng trạng thái hiện
-		// tại nếu chiều cao yêu cầu không nằm trong tương lai. Đây là cách tương
-		// thích với ví, không phải hỗ trợ đọc lại trạng thái lịch sử.
-		if resolved > api.app.CurrentHeight() {
+		// chỉ phục vụ snapshot state tại head hiện tại; từ chối cả block quá khứ (< head) lẫn tương lai (> head)
+		if resolved != api.app.CurrentHeight() {
 			return errors.New("historical state is not available")
 		}
 		return nil
 	}
 	if hash, ok := block.Hash(); ok {
-		latest, found, err := api.app.EthereumBlockByNumber(api.app.CurrentHeight())
+		head := api.app.CurrentHeight()
+		if head == 0 {
+			if hash != api.genesisBlock().Hash {
+				return errors.New("historical state is not available")
+			}
+			return nil
+		}
+		latest, found, err := api.app.EthereumBlockByNumber(head)
 		if err != nil {
 			return err
 		}

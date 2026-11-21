@@ -1,0 +1,21 @@
+{
+  "allowanceA": "1000",
+  "allowanceB": "2500",
+  "allowanceSlotA": "0xdafb977924a90ced53c903d6fa300922fed8baaae9fb05b9836e0dfb1bef3db2",
+  "allowanceSlotB": "0x716a32e08439a56056ba7fdd7572f024db8259a898d7c1b821afd660add1c2f2",
+  "allowanceSlotIndex": 1,
+  "buildCommand": "npm install --no-save @openzeppelin/contracts@4.9.6 solc@0.8.24 \u0026\u0026 SOLC_NODE_MODULES=./node_modules node build.mjs",
+  "coinbase": "0x000000000000000000000000000000000000cafe",
+  "contractName": "ApproveToken",
+  "evmVersion": "shanghai",
+  "metadataBytecodeHash": "none",
+  "openZeppelinVersion": "4.9.6",
+  "optimizerEnabled": false,
+  "ownerA": "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf",
+  "ownerB": "0x2b5ad5c4795c026514f8317c7a215e218dccd6cf",
+  "routerAddress": "0x000000000000000000000000000000000000d001",
+  "runtimeBytecodeBytes": 4506,
+  "runtimeCodeHash": "0xa78dfa9373d661f184caea9f87e8a71536053b95a69ca100ca08eb63f100cc97",
+  "solidityVersion": "0.8.24",
+  "tokenAddress": "0x000000000000000000000000000000000000c020"
+}

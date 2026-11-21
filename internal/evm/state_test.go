@@ -25,6 +25,8 @@ func testStateDB(t *testing.T) *PebbleStateDB {
 func TestCommittedStateIsCapturedAtFirstWritePerTransaction(t *testing.T) {
 	s := testStateDB(t)
 	addr, slot := common.HexToAddress("0x1234"), common.BigToHash(common.Big1)
+	// theo EIP-161 tài khoản mang storage phải tồn tại không rỗng (có code/nonce) để Finalise(true) không xóa
+	s.SetCode(addr, []byte{0x00}, 0)
 	original := common.BigToHash(common.Big2)
 	s.SetState(addr, slot, original)
 	s.Finalise(true)

@@ -1,12 +1,50 @@
+# Docs, design notes, benchmark outputs, and non-code files
+/docs/
+/design/
+/results/
+*.md
+!/README.md
+*.doc
+*.docx
+*.pdf
+*.ppt
+*.pptx
+*.xls
+*.xlsx
+*.txt
+*.rtf
+*.odt
+*.csv
+*.tsv
+*.jsonl
+*.log
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.webp
+*.svg
+*.ico
+*.drawio
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
 
-/docs/*
-!/docs/*.md
-!/docs/Pluto_Project_Guide_VI.docx
 /.agents
 /.vscode
 /build
 /scripts/*
 !/scripts/foundry-e2e.ps1
+!/scripts/setup-pluto-network.ps1
+!/scripts/start-pluto-network.ps1
+!/scripts/stop-pluto-network.ps1
+!/scripts/pluto-network-dashboard.ps1
+!/scripts/test-pluto-network.ps1
+!/scripts/compare-executors.ps1
 
 /plutod
 *.exe
@@ -18,7 +56,6 @@
 *.out
 *.prof
 
-
 *.db/
 *.db
 
@@ -28,12 +65,4 @@
 
 .pluto-home/
 /.pluto-network/
-!/docs/pluto-validator-network.md
-!/scripts/setup-pluto-network.ps1
-!/scripts/start-pluto-network.ps1
-!/scripts/stop-pluto-network.ps1
-!/scripts/pluto-network-dashboard.ps1
-!/scripts/test-pluto-network.ps1
-!/scripts/compare-executors.ps1
-
 /.diag-go-cache/

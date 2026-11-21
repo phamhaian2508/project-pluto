@@ -61,6 +61,8 @@ func (p CheckpointPolicy) String() string {
 		return "P2"
 	case CheckpointPolicyP3:
 		return "P3"
+	case CheckpointPolicyP4:
+		return "P4"
 	default:
 		return fmt.Sprintf("UNKNOWN-%d", p)
 	}

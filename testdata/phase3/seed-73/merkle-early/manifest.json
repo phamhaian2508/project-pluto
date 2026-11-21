@@ -1,0 +1,153 @@
+{
+  "blockSchedule": [
+    {
+      "dir": "blocks/block-01",
+      "distinctWords": 16,
+      "earlyCount": 64,
+      "gasUsed": 3091068,
+      "height": 1,
+      "lateCount": 0,
+      "txCount": 64,
+      "wordRange": [
+        0,
+        15
+      ]
+    },
+    {
+      "dir": "blocks/block-02",
+      "distinctWords": 16,
+      "earlyCount": 64,
+      "gasUsed": 2817032,
+      "height": 2,
+      "lateCount": 0,
+      "txCount": 64,
+      "wordRange": [
+        0,
+        15
+      ]
+    },
+    {
+      "dir": "blocks/block-03",
+      "distinctWords": 16,
+      "earlyCount": 64,
+      "gasUsed": 2817032,
+      "height": 3,
+      "lateCount": 0,
+      "txCount": 64,
+      "wordRange": [
+        0,
+        15
+      ]
+    },
+    {
+      "dir": "blocks/block-04",
+      "distinctWords": 16,
+      "earlyCount": 64,
+      "gasUsed": 2816440,
+      "height": 4,
+      "lateCount": 0,
+      "txCount": 64,
+      "wordRange": [
+        0,
+        15
+      ]
+    },
+    {
+      "dir": "blocks/block-05",
+      "distinctWords": 16,
+      "earlyCount": 64,
+      "gasUsed": 2816936,
+      "height": 5,
+      "lateCount": 0,
+      "txCount": 64,
+      "wordRange": [
+        0,
+        15
+      ]
+    },
+    {
+      "dir": "blocks/block-06",
+      "distinctWords": 16,
+      "earlyCount": 64,
+      "gasUsed": 2816452,
+      "height": 6,
+      "lateCount": 0,
+      "txCount": 64,
+      "wordRange": [
+        0,
+        15
+      ]
+    }
+  ],
+  "blocks": [
+    "blocks/block-01",
+    "blocks/block-02",
+    "blocks/block-03",
+    "blocks/block-04",
+    "blocks/block-05",
+    "blocks/block-06"
+  ],
+  "caseId": "merkle-early",
+  "chainId": 1337,
+  "claimedBitMapSlot": 0,
+  "claimedEventTopic": "0x6aa3eac93d079e5e100b1029be716caa33586c96aa4baac390669fb5c2a21212",
+  "coinbase": "0x000000000000000000000000000000000000cafE",
+  "contractAddress": "0x000000000000000000000000000000000000d001",
+  "evmVersion": "shanghai",
+  "feeConfig": {
+    "baseFeeWei": 1,
+    "blockGasLimit": 100000000,
+    "feeCapWei": 1,
+    "tipWei": 0,
+    "txGasLimit": 1000000
+  },
+  "fork": "Shanghai",
+  "inputSha256": {
+    "abi.json": "0x92d0fd3871a1d022edef35a8ba30d9d7a3e887d21232f89a7483e6865b5988ec",
+    "alloc.json": "0x69cd5717cfb65736bad45eeb67b31352e6e0093d666d62683ca3f697b46622d1",
+    "blocks/block-01/env.json": "0xd34346aedda61f86afa72d6b373ad33c37921201a10360caa3fa77824c44bf78",
+    "blocks/block-01/reference-result.json": "0xa064a5eea5cb10a8c2f1fc6d5694da25f82e86c1eb16d513288045c1dd92c8da",
+    "blocks/block-01/txs.json": "0xc6bd66df38b3cb3349aa2e80fe06815949e3a113967ab8ae960af8df214c047f",
+    "blocks/block-02/env.json": "0x021ba4f1458ab453dfdd7ed945e0d708813c92cf2608b7786c6577ce9f6226be",
+    "blocks/block-02/reference-result.json": "0xd8f09288087d183aa80c2611c46eab75075c87762124d396d28fe218a31753db",
+    "blocks/block-02/txs.json": "0x2ca9c52dd927c71e64b2db89110b58e79c585c846614e19e870b05034bd754cc",
+    "blocks/block-03/env.json": "0x7b673549d63645c71ea2f67f4b158cfa95aee47806e71d05e0823a9661c95715",
+    "blocks/block-03/reference-result.json": "0x02ece4c98769d4099b0d2decf3894a45cc88c89daa1a57b70d2a64125bbb2d41",
+    "blocks/block-03/txs.json": "0x31b593eacc7da0d1030508c4bb15c07af77c75dedcf3cb031700c0c70c5ce562",
+    "blocks/block-04/env.json": "0xcdd2fa77c5e4db6dd01d793140cf74ba2b2b63f4b09af7508d5159628774be02",
+    "blocks/block-04/reference-result.json": "0xe586c85a985e8f1825e06ce94fb5b9a7ba02cb38d68181f4459aef0460f72460",
+    "blocks/block-04/txs.json": "0x1bbed1eb6fd3c361d9e3f43b9dfc7eb2aa23f8bf7b0ce1d10ba72f7c1592df27",
+    "blocks/block-05/env.json": "0x119df5fe628ee1105fa0edcd85b1451386c4ecd320da1cd6597ddffffe821df1",
+    "blocks/block-05/reference-result.json": "0x53c61c73ab485a27f0c7b707c8170b867c52cee05cd5c966b5f12346b8fc8612",
+    "blocks/block-05/txs.json": "0x209747b366771ca4f0959be0ebdda4b12a875384007aaefac948134029debcda",
+    "blocks/block-06/env.json": "0x5286a975695ea7bb4b54941efa3cb4189f7a23de4f42af102ab1334d5cfc4595",
+    "blocks/block-06/reference-result.json": "0x8ff7595d9c91cdd2573307b3836bc82dffef13afd655188bad10882f75618bc0",
+    "blocks/block-06/txs.json": "0x15142f14001a5a14bcc6f0dcc48b87661ef86e186809e8cae7214f676d470467",
+    "proofs.json": "0x1f2be20c2e91650bbe278dfeb62dfbc389498bc5413d8d0bdea070f3c76342f5",
+    "storage-layout.json": "0xa36c2ffbedce19e65cb26b08fcbf1da045e8c1345ea0f1a99881835a29822ebf"
+  },
+  "leafCount": 16384,
+  "merkleRoot": "0x6050dc6a0db5ff20ee8ab24b6a3cc74e8e3f6a21cec121cd2e90dc5d9a0d6825",
+  "metadataBytecodeHash": "none",
+  "optimizerEnabled": false,
+  "prng": "splitmix64",
+  "runtimeCodeHash": "0x87ef413dbc5ec0d32c8d5008b963562ed8c295df8b6ee738a3537362be891826",
+  "seed": 73,
+  "selectors": {
+    "claimEarly": "0x21252a06",
+    "claimLate": "0xde2afb9c"
+  },
+  "solcFullVersion": "0.8.24+commit.e11b9ed9.Linux.g++",
+  "solidityVersion": "0.8.24",
+  "traceSummary": {
+    "claimEarlyFirstSloadStep": 229,
+    "claimEarlyKeccakAfter": 15,
+    "claimEarlyKeccakBefore": 0,
+    "claimLateFirstSloadStep": 2498,
+    "claimLateKeccakAfter": 0,
+    "claimLateKeccakBefore": 15
+  },
+  "treeDepth": 14,
+  "txOrdering": "grouped-by-word-then-shuffled-groups-and-lanes",
+  "walletCount": 64
+}

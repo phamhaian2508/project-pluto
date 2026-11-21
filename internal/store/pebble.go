@@ -90,6 +90,61 @@ func (pdb *PebbleDB) NewBatch() dbm.Batch {
 	return &PebbleBatch{batch: pdb.db.NewBatch()}
 }
 
+// PebbleSnapshot giữ ảnh chụp nhất quán tại một thời điểm của PebbleDB để đọc RPC không bị torn-read.
+type PebbleSnapshot struct {
+	snap *pebble.Snapshot
+}
+
+// NewSnapshot tạo ảnh chụp chỉ-đọc nhất quán từ PebbleDB. Người gọi phải gọi Close() sau khi dùng.
+func (pdb *PebbleDB) NewSnapshot() *PebbleSnapshot {
+	return &PebbleSnapshot{snap: pdb.db.NewSnapshot()}
+}
+
+func (s *PebbleSnapshot) Get(key []byte) ([]byte, error) {
+	val, closer, err := s.snap.Get(key)
+	if err == pebble.ErrNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ret := make([]byte, len(val))
+	copy(ret, val)
+	_ = closer.Close()
+	return ret, nil
+}
+
+func (s *PebbleSnapshot) Has(key []byte) (bool, error) {
+	_, closer, err := s.snap.Get(key)
+	if err == pebble.ErrNotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	_ = closer.Close()
+	return true, nil
+}
+
+func (s *PebbleSnapshot) Iterator(start, end []byte) (dbm.Iterator, error) {
+	iter, err := s.snap.NewIter(&pebble.IterOptions{
+		LowerBound: start,
+		UpperBound: end,
+	})
+	if err != nil {
+		return nil, err
+	}
+	iter.First()
+	return &pebbleIterator{iter: iter, start: start, end: end, isReverse: false, isInvalid: false}, nil
+}
+
+func (s *PebbleSnapshot) Close() error {
+	if s == nil || s.snap == nil {
+		return nil
+	}
+	return s.snap.Close()
+}
+
 // Print xuất các số liệu đo.
 func (pdb *PebbleDB) Print() error {
 	fmt.Println(pdb.db.Metrics().String())
