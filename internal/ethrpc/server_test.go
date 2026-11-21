@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -84,7 +85,7 @@ func TestHTTPJSONRPCReadMethods(t *testing.T) {
 		{"gas price", "eth_gasPrice", []any{}, expectJSON(hexutil.EncodeBig(new(big.Int).Add(mustNextBaseFee(t, application), big.NewInt(1_000_000_000))))},
 		{"priority fee", "eth_maxPriorityFeePerGas", []any{}, expectJSON("0x3b9aca00")},
 		{"balance", "eth_getBalance", []any{to, "latest"}, expectJSON("0x5")},
-		{"balance by numeric block tag", "eth_getBalance", []any{to, "0x0"}, expectJSON("0x5")},
+		{"balance by current numeric block tag", "eth_getBalance", []any{to, "0x1"}, expectJSON("0x5")},
 		{"nonce", "eth_getTransactionCount", []any{from, "latest"}, expectJSON("0x1")},
 		{"code", "eth_getCode", []any{to, "latest"}, expectJSON("0x")},
 		{"storage", "eth_getStorageAt", []any{to, common.Hash{}, "latest"}, expectJSON(common.Hash{}.Hex())},
@@ -182,6 +183,144 @@ func TestStateReadRejectsBlockBeyondHead(t *testing.T) {
 	response := rpcRequest(t, httpServer.URL, "eth_getBalance", []any{address, "0x1"})
 	if response.Error == nil {
 		t.Fatalf("expected future block tag error, got result %s", response.Result)
+	}
+}
+
+func TestStateReadRejectsHistoricalBlockAndGenesisBlockStaysFixed(t *testing.T) {
+	application, key, _ := rpcTestApp(t)
+	server, err := New(application)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	genesisBefore := rpcRequest(t, httpServer.URL, "eth_getBlockByNumber", []any{"0x0", false})
+	if genesisBefore.Error != nil {
+		t.Fatalf("genesis block before height 1 error: %+v", genesisBefore.Error)
+	}
+
+	to := common.HexToAddress("0x0000000000000000000000000000000000001234")
+	tx := types.NewTx(&types.LegacyTx{Nonce: 0, GasPrice: big.NewInt(1_000_000_000), Gas: 21000, To: &to, Value: big.NewInt(5)})
+	tx, err = types.SignTx(tx, types.LatestSignerForChainID(big.NewInt(plutoconfig.EVMChainID)), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := tx.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.FinalizeBlock(context.Background(), &abci.FinalizeBlockRequest{
+		Height: 1, Time: time.Unix(1234, 0), Hash: common.HexToHash("0xabc").Bytes(), Txs: [][]byte{raw},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.Commit(context.Background(), &abci.CommitRequest{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// truy vấn state quá khứ (0x0 khi head=1) phải báo lỗi thay vì trả nhầm state block 1
+	historical := rpcRequest(t, httpServer.URL, "eth_getBalance", []any{to, "0x0"})
+	if historical.Error == nil {
+		t.Fatalf("expected historical block error for 0x0 at head 1, got result %s", historical.Result)
+	}
+
+	// block 0 phải giữ nguyên hash và stateRoot genesis sau khi chain tiến lên block 1
+	genesisAfter := rpcRequest(t, httpServer.URL, "eth_getBlockByNumber", []any{"0x0", false})
+	if genesisAfter.Error != nil {
+		t.Fatalf("genesis block after height 1 error: %+v", genesisAfter.Error)
+	}
+	if !bytes.Equal(genesisBefore.Result, genesisAfter.Result) {
+		t.Fatalf("genesis block mutated after block 1:\nbefore=%s\nafter=%s", genesisBefore.Result, genesisAfter.Result)
+	}
+}
+
+func TestConcurrentHTTPJSONRPCAndCommitRaceFree(t *testing.T) {
+	application, key, from := rpcTestApp(t)
+	server, err := New(application)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	t.Cleanup(httpServer.Close)
+
+	to := common.HexToAddress("0x0000000000000000000000000000000000002345")
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	errCh := make(chan error, 8)
+	for worker := 0; worker < 4; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					for _, req := range []struct {
+						method string
+						params any
+					}{
+						{"eth_blockNumber", []any{}},
+						{"eth_getBalance", []any{to, "latest"}},
+						{"eth_getTransactionCount", []any{from, "latest"}},
+						{"eth_getBlockByNumber", []any{"latest", false}},
+						{"eth_gasPrice", []any{}},
+					} {
+						payload, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": req.method, "params": req.params})
+						resp, err := http.Post(httpServer.URL, "application/json", bytes.NewReader(payload))
+						if err != nil {
+							select {
+							case errCh <- err:
+							default:
+							}
+							return
+						}
+						_, _ = io.Copy(io.Discard, resp.Body)
+						_ = resp.Body.Close()
+					}
+				}
+			}
+		}()
+	}
+
+	signer := types.LatestSignerForChainID(application.ChainID())
+	for height := int64(1); height <= 10; height++ {
+		tx := types.NewTx(&types.LegacyTx{
+			Nonce: uint64(height - 1), GasPrice: big.NewInt(1_000_000_000), Gas: 21000, To: &to, Value: big.NewInt(1),
+		})
+		signed, err := types.SignTx(tx, signer, key)
+		if err != nil {
+			close(stop)
+			wg.Wait()
+			t.Fatal(err)
+		}
+		raw, err := signed.MarshalBinary()
+		if err != nil {
+			close(stop)
+			wg.Wait()
+			t.Fatal(err)
+		}
+		if _, err := application.FinalizeBlock(context.Background(), &abci.FinalizeBlockRequest{
+			Height: height, Time: time.Unix(1000+height, 0), Hash: common.BigToHash(big.NewInt(height)).Bytes(), Txs: [][]byte{raw},
+		}); err != nil {
+			close(stop)
+			wg.Wait()
+			t.Fatal(err)
+		}
+		if _, err := application.Commit(context.Background(), &abci.CommitRequest{}); err != nil {
+			close(stop)
+			wg.Wait()
+			t.Fatal(err)
+		}
+	}
+	close(stop)
+	wg.Wait()
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("concurrent RPC request failed: %v", err)
+	default:
 	}
 }
 

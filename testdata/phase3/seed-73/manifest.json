@@ -1,0 +1,65 @@
+{
+  "cases": {
+    "merkle-early": {
+      "blocks": 6,
+      "dir": "merkle-early",
+      "firstTxHash": "0xe671e67680a674338d1abbc5402779e01da81dd5603180479975e4fea14815ab",
+      "lastTxHash": "0xc0043292878e6227eb14af64293a465ccf20af292c339a16bc574d06ae7cceae",
+      "manifestSha256": "0x376869f044ef624af71e2cb7781a8f14270cf4cc511cc5ad91dd6db5027715dd",
+      "runtimeCodeHash": "0x87ef413dbc5ec0d32c8d5008b963562ed8c295df8b6ee738a3537362be891826",
+      "totalGasUsed": 17174960,
+      "totalTxs": 384
+    },
+    "merkle-independent-early": {
+      "blocks": 6,
+      "dir": "merkle-independent-early",
+      "firstTxHash": "0x1140b10339a228cb7494fd9adc6245d530371c502ca56c37aa8f6ee1195a1e62",
+      "lastTxHash": "0xbb85cf4849d477de8a19c5e52305bc1adcf13152ac264fb5da2deee53e5080cd",
+      "manifestSha256": "0xe9a1bdda3c62ddcf73143b814e74a995fe67a76a179756df6d26ae5965096db6",
+      "runtimeCodeHash": "0x87ef413dbc5ec0d32c8d5008b963562ed8c295df8b6ee738a3537362be891826",
+      "totalGasUsed": 17997116,
+      "totalTxs": 384
+    },
+    "merkle-independent-late": {
+      "blocks": 6,
+      "dir": "merkle-independent-late",
+      "firstTxHash": "0xdf76c0602b127b66fc7581fe093484b3d0011d2b175fd6b30ee42af55fc06d6d",
+      "lastTxHash": "0xda5765cff5d0c7844905a3b915c089f9e04a907503920d0126d6a6f920f41156",
+      "manifestSha256": "0xcf0b2f7d3e4d538172f93a5060ac9ffc70e9c2fd38d17580d95e3410d19d9a3e",
+      "runtimeCodeHash": "0x87ef413dbc5ec0d32c8d5008b963562ed8c295df8b6ee738a3537362be891826",
+      "totalGasUsed": 18005180,
+      "totalTxs": 384
+    },
+    "merkle-late": {
+      "blocks": 6,
+      "dir": "merkle-late",
+      "firstTxHash": "0xef8ed7790f458b0784cc09e7deb825e992f7a0c27775e034bce190d7de8612dc",
+      "lastTxHash": "0x7d54e1284e40a4cacaa49b0f5696e3b5dc36c364f4a43d00e75a941fcb47ff93",
+      "manifestSha256": "0x4e941af33531428a602ec6155a96e0b280050e7a7543edd1a2460d8922628d57",
+      "runtimeCodeHash": "0x87ef413dbc5ec0d32c8d5008b963562ed8c295df8b6ee738a3537362be891826",
+      "totalGasUsed": 17183024,
+      "totalTxs": 384
+    },
+    "merkle-mixed": {
+      "blocks": 6,
+      "dir": "merkle-mixed",
+      "firstTxHash": "0x737d0107b82d4443331550c8ba5716789f95c39cd0976c164bb8870cab25dc54",
+      "lastTxHash": "0x167f0d112d0f334c8a7df92ab13dcbafb64d221b1b16f3dc50378ccc6f994683",
+      "manifestSha256": "0xdfa1a210f33dfb149658fb836c65c8580f927cdfede26ee3253a04b60e38ac67",
+      "runtimeCodeHash": "0x87ef413dbc5ec0d32c8d5008b963562ed8c295df8b6ee738a3537362be891826",
+      "totalGasUsed": 17452136,
+      "totalTxs": 384
+    }
+  },
+  "chainId": 1337,
+  "contractAddress": "0x000000000000000000000000000000000000d001",
+  "evmVersion": "shanghai",
+  "fork": "Shanghai",
+  "merkleRoot": "0x6050dc6a0db5ff20ee8ab24b6a3cc74e8e3f6a21cec121cd2e90dc5d9a0d6825",
+  "metadataBytecodeHash": "none",
+  "optimizerEnabled": false,
+  "runtimeCodeHash": "0x87ef413dbc5ec0d32c8d5008b963562ed8c295df8b6ee738a3537362be891826",
+  "seed": 73,
+  "solcFullVersion": "0.8.24+commit.e11b9ed9.Linux.g++",
+  "solidityVersion": "0.8.24"
+}

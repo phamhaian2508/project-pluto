@@ -1,6 +1,7 @@
 package evm
 
 import (
+	"errors"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -12,11 +13,15 @@ import (
 	"github.com/holiman/uint256"
 )
 
+// seam cho unit test ép trả errResumeUnsupported để kiểm chứng nhánh fallback FullReplay
+var runResumedGethFrame = resumeGethFrame
+
 func resumeOptimisticAttempt(base *PebbleStateDB, versions *MVMemory, config *params.ChainConfig, chainID *big.Int, env BlockEnv, tx *types.Transaction, txIndex int, incarnation uint64, checkpoint *attemptCheckpoint, meter *attemptReplayMeter) (*optimisticAttempt, replayWork, error) {
 	if checkpoint == nil || checkpoint.execution == nil || tx == nil || tx.To() == nil {
 		return nil, replayWork{}, errResumeUnsupported
 	}
-	if config.Rules(big.NewInt(env.Height), true, env.Time).IsEIP4762 {
+	rules := config.Rules(big.NewInt(env.Height), true, env.Time)
+	if rules.IsCancun || rules.IsEIP4762 || rules.IsPrague {
 		return nil, replayWork{}, errResumeUnsupported
 	}
 	machine := InterpreterState{}
@@ -25,6 +30,11 @@ func resumeOptimisticAttempt(base *PebbleStateDB, versions *MVMemory, config *pa
 		return nil, replayWork{}, err
 	}
 	if len(machine.CallFrames) != 1 || machine.CallFrames[0].Depth != 1 || machine.CallFrames[0].Deployment {
+		return nil, replayWork{}, errResumeUnsupported
+	}
+	// snapshots[0] là pre-ApplyMessage (trước buyGas/SetNonce); snapshots[1] là call-frame snapshot của evm.Call
+	callFrameSnap, ok := state.callFrameSnapshotID()
+	if !ok {
 		return nil, replayWork{}, errResumeUnsupported
 	}
 	state.TxIndex = txIndex
@@ -47,11 +57,13 @@ func resumeOptimisticAttempt(base *PebbleStateDB, versions *MVMemory, config *pa
 	evmEnv := vm.NewEVM(blockContext, state, config, vm.Config{})
 	evmEnv.SetTxContext(core.NewEVMTxContext(msg))
 	frame := machine.CallFrames[0]
-	ret, gasRemaining, vmErr := resumeGethFrame(evmEnv, frame, machine, meter)
+	ret, gasRemaining, vmErr := runResumedGethFrame(evmEnv, frame, machine, meter)
+	if errors.Is(vmErr, errResumeUnsupported) {
+		// không biến lỗi unsupported thành failed VM receipt -> để recoverOptimisticAttempt rơi về FullReplay
+		return nil, replayWork{}, errResumeUnsupported
+	}
 	if vmErr != nil {
-		if revision, ok := state.oldestSnapshotID(); ok {
-			state.RevertToSnapshot(revision)
-		}
+		state.RevertToSnapshot(callFrameSnap)
 		if vmErr != vm.ErrExecutionReverted {
 			gasRemaining = 0
 		}
@@ -59,6 +71,9 @@ func resumeOptimisticAttempt(base *PebbleStateDB, versions *MVMemory, config *pa
 	usedGas, err := finalizeResumedMessage(state, config, env, msg, tx.Gas(), gasRemaining)
 	if err != nil {
 		return nil, replayWork{}, err
+	}
+	if dbErr := state.Err(); dbErr != nil {
+		return nil, replayWork{}, dbErr
 	}
 	attempt := &optimisticAttempt{state: state, status: attemptEstimate, result: TxResult{Index: txIndex}}
 	attempt.result.GasUsed = usedGas
@@ -126,9 +141,9 @@ func finalizeResumedMessage(state *TxState, config *params.ChainConfig, env Bloc
 	return usedGas, nil
 }
 
-func (s *PebbleStateDB) oldestSnapshotID() (int, bool) {
-	if s == nil || len(s.snapshots) == 0 {
+func (s *PebbleStateDB) callFrameSnapshotID() (int, bool) {
+	if s == nil || len(s.snapshots) < 2 {
 		return 0, false
 	}
-	return s.snapshots[0].id, true
+	return s.snapshots[1].id, true
 }

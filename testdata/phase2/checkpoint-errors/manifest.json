@@ -1,0 +1,300 @@
+{
+  "blockSchedule": [
+    {
+      "description": "OOG on speculative first attempt: A writes slot 300 (0-\u003e5), B writes 7 with exact gasLimit between G(5-\u003e7) and G(0-\u003e7) -\u003e succeeds; C writes untouched slot 301 with same gasLimit -\u003e genuine OOG",
+      "dir": "blocks/block-01",
+      "expectedLogCount": [
+        1,
+        1,
+        0
+      ],
+      "expectedStatuses": [
+        "0x1",
+        "0x1",
+        "0x0"
+      ],
+      "gasUsed": 171050,
+      "height": 1,
+      "txCount": 3,
+      "txGasUsed": [
+        47246,
+        60902,
+        62902
+      ]
+    },
+    {
+      "description": "Warm/cold \u0026 EIP-2200/3529 original-storage refund with and without EIP-2930 access list (0-\u003e42-\u003e0 cold \u0026 warm, contended 0-\u003e10 then 10-\u003e20-\u003e10 \u0026 10-\u003e20-\u003e0)",
+      "dir": "blocks/block-02",
+      "expectedLogCount": [
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "expectedStatuses": [
+        "0x1",
+        "0x1",
+        "0x1",
+        "0x1",
+        "0x1"
+      ],
+      "gasUsed": 297440,
+      "height": 2,
+      "txCount": 5,
+      "txGasUsed": [
+        63960,
+        65800,
+        47270,
+        60061,
+        60349
+      ]
+    },
+    {
+      "description": "Memory expansion before and after SLOAD/SSTORE (verifies memory.lastGasCost preservation across checkpoint resume)",
+      "dir": "blocks/block-03",
+      "expectedLogCount": [
+        1,
+        1,
+        1
+      ],
+      "expectedStatuses": [
+        "0x1",
+        "0x1",
+        "0x1"
+      ],
+      "gasUsed": 171899,
+      "height": 3,
+      "txCount": 3,
+      "txGasUsed": [
+        47270,
+        62136,
+        62493
+      ]
+    },
+    {
+      "description": "Post-checkpoint write to slot Y + log + revert after A updates slot 0 (count): A's write persists, B's slot Y and log roll back",
+      "dir": "blocks/block-04",
+      "expectedLogCount": [
+        1,
+        0,
+        1
+      ],
+      "expectedStatuses": [
+        "0x1",
+        "0x0",
+        "0x1"
+      ],
+      "gasUsed": 169598,
+      "height": 4,
+      "txCount": 3,
+      "txGasUsed": [
+        29250,
+        80366,
+        59982
+      ]
+    },
+    {
+      "description": "External CALL in suffix (cancels resume -\u003e full replay fallback) and external CALL in prefix (stops checkpointing for remainder of attempt)",
+      "dir": "blocks/block-05",
+      "expectedLogCount": [
+        1,
+        2,
+        2,
+        1
+      ],
+      "expectedStatuses": [
+        "0x1",
+        "0x1",
+        "0x1",
+        "0x1"
+      ],
+      "gasUsed": 227078,
+      "height": 5,
+      "txCount": 4,
+      "txGasUsed": [
+        29250,
+        88974,
+        71912,
+        36942
+      ]
+    }
+  ],
+  "blocks": [
+    "blocks/block-01",
+    "blocks/block-02",
+    "blocks/block-03",
+    "blocks/block-04",
+    "blocks/block-05"
+  ],
+  "caseId": "checkpoint-errors",
+  "chainId": 1337,
+  "coinbase": "0x000000000000000000000000000000000000cafE",
+  "contractAddress": "0x000000000000000000000000000000000000C001",
+  "evmVersion": "shanghai",
+  "feeConfig": {
+    "baseFeeWei": 1,
+    "blockGasLimit": 100000000,
+    "feeCapWei": 1,
+    "tipWei": 0,
+    "txGasLimit": 1000000
+  },
+  "fork": "Shanghai",
+  "helperAddress": "0x000000000000000000000000000000000000c002",
+  "inputSha256": {
+    "abi.json": "0x1b084be111c3a95455fc029e0cd2953fb3b2856c5713caedcf7b5a09d1a9fd56",
+    "alloc.json": "0x9beec61f0e71f49da8e1727067fa8515d007c1c821c438898152f7e8f5142d1e",
+    "blocks/block-01/env.json": "0xd4fc1998b4566599b8dbfa3f00eb46aa092bb5e25475ccdbd5195d29537b486c",
+    "blocks/block-01/reference-result.json": "0xe483ef4679394a9a89cb2147a025ed4d1fa7d39603fba595c5c6aeda8e64dc11",
+    "blocks/block-01/txs.json": "0x3dbe5b44ba33e010be57aa474fd2c9f4d6098b2eb0de579ce3a605ce6c8a3870",
+    "blocks/block-02/env.json": "0x1b6dab07c6b9eb79c0e9c5ce831c735cbd7dccf934229507742cfead333f90e8",
+    "blocks/block-02/reference-result.json": "0x38bae6b2e495423d122803dead96f2c59ff5d572e0751f4ce8616ad1b440a203",
+    "blocks/block-02/txs.json": "0xf87646fac9ef6c135758cd7362812d5aa795cd534d5ad8ca6570836ea45bebee",
+    "blocks/block-03/env.json": "0xbca49f528380db6641b40baf42c148eefac68e801fa7e391a820990e18749689",
+    "blocks/block-03/reference-result.json": "0xeb45df72a2c1243c3c697907cc6115a8b670d19a545dd3def150032be48137b3",
+    "blocks/block-03/txs.json": "0x695d760c19035bec8a850811a2bdf489968274dbe588a1d4078208bb89eab270",
+    "blocks/block-04/env.json": "0x9cc4220129231b06cfecf381d6f646793ce58a700c960561d4c92cd5202ca821",
+    "blocks/block-04/reference-result.json": "0x2157abc6fa16defaf80b7828af65bb8696e9d9b66d98f9aa4c4ab04efb1b373c",
+    "blocks/block-04/txs.json": "0x4fca0ba3bf5453719f89909ae0ca533cf9bdf3b9dc4ba7d8a984c76823129879",
+    "blocks/block-05/env.json": "0x19779d497c006bf12efa5078adc67388f16878ea69ed91d3fb719ab303db72c1",
+    "blocks/block-05/reference-result.json": "0x3aa0b034999ef95380f917316896a48b368144c624791385e5d673c9a92f7882",
+    "blocks/block-05/txs.json": "0xb718698f65cd5bc2381d66525ddceb0d63b7f8861bbbe5d00dd4a96ced4b8a05",
+    "helper-abi.json": "0x88185f37c411b6f61e1d823d4aa8f1ae5764ddb1b56f2949fd952d4e9a808de3",
+    "storage-layout.json": "0xcad29270b69ef92d5a3f81e407ecd010b6f75f829f3f94310f77d08f2e1c408d"
+  },
+  "metadataBytecodeHash": "none",
+  "oogThreshold": {
+    "gasUsed0To7": 78002,
+    "gasUsed5To7": 60902,
+    "gasDiff": 17100,
+    "chosenTxGasLimit": 62902,
+    "standalone0To7Status": "0x0",
+    "ordered5To7Status": "0x1"
+  },
+  "optimizerEnabled": false,
+  "runtimeCodeHash": "0x288860c5e6ac2e650d90532c1eff5eadc077159c3d33aa7040830f6ecf355f9a",
+  "solcFullVersion": "0.8.24+commit.e11b9ed9.Linux.g++",
+  "solidityVersion": "0.8.24",
+  "traces": {
+    "externalCallThenRead": {
+      "function": "externalCallThenRead",
+      "totalOpcodeSteps": 7393,
+      "maxDepth": 2,
+      "hasExternalCall": true,
+      "sloadCount": 2,
+      "sstoreCount": 2,
+      "firstSloadStep": 433,
+      "firstSloadPc": 139,
+      "firstSstoreStep": 441,
+      "firstSstorePc": 147,
+      "firstLogStep": 533,
+      "firstCallStep": 321,
+      "keccakTotal": 256,
+      "keccakBeforeSload": 0,
+      "keccakAfterSload": 256,
+      "keccakBeforeSstore": 0,
+      "keccakAfterSstore": 256,
+      "externalCallOps": [
+        "CALL"
+      ]
+    },
+    "hashThenDirectSstore": {
+      "function": "hashThenDirectSstore",
+      "totalOpcodeSteps": 6869,
+      "maxDepth": 1,
+      "hasExternalCall": false,
+      "sloadCount": 0,
+      "sstoreCount": 1,
+      "firstSloadStep": -1,
+      "firstSloadPc": 0,
+      "firstSstoreStep": 6716,
+      "firstSstorePc": 897,
+      "firstLogStep": 6805,
+      "firstCallStep": -1,
+      "keccakTotal": 256,
+      "keccakBeforeSload": 256,
+      "keccakAfterSload": 0,
+      "keccakBeforeSstore": 256,
+      "keccakAfterSstore": 0
+    },
+    "hashThenExpandMemoryAndStore": {
+      "function": "hashThenExpandMemoryAndStore",
+      "totalOpcodeSteps": 7043,
+      "maxDepth": 1,
+      "hasExternalCall": false,
+      "sloadCount": 1,
+      "sstoreCount": 1,
+      "firstSloadStep": 6797,
+      "firstSloadPc": 742,
+      "firstSstoreStep": 6842,
+      "firstSstorePc": 795,
+      "firstLogStep": 6944,
+      "firstCallStep": -1,
+      "keccakTotal": 257,
+      "keccakBeforeSload": 256,
+      "keccakAfterSload": 1,
+      "keccakBeforeSstore": 256,
+      "keccakAfterSstore": 1
+    },
+    "hashThenExternalCall": {
+      "function": "hashThenExternalCall",
+      "totalOpcodeSteps": 7382,
+      "maxDepth": 2,
+      "hasExternalCall": true,
+      "sloadCount": 2,
+      "sstoreCount": 2,
+      "firstSloadStep": 6674,
+      "firstSloadPc": 1284,
+      "firstSstoreStep": 6686,
+      "firstSstorePc": 1297,
+      "firstLogStep": 6972,
+      "firstCallStep": 6760,
+      "keccakTotal": 256,
+      "keccakBeforeSload": 256,
+      "keccakAfterSload": 0,
+      "keccakBeforeSstore": 256,
+      "keccakAfterSstore": 0,
+      "externalCallOps": [
+        "CALL"
+      ]
+    },
+    "hashThenWarmColdRefund": {
+      "function": "hashThenWarmColdRefund",
+      "totalOpcodeSteps": 7077,
+      "maxDepth": 1,
+      "hasExternalCall": false,
+      "sloadCount": 4,
+      "sstoreCount": 2,
+      "firstSloadStep": 6776,
+      "firstSloadPc": 982,
+      "firstSstoreStep": 6785,
+      "firstSstorePc": 991,
+      "firstLogStep": 6978,
+      "firstCallStep": -1,
+      "keccakTotal": 256,
+      "keccakBeforeSload": 256,
+      "keccakAfterSload": 0,
+      "keccakBeforeSstore": 256,
+      "keccakAfterSstore": 0
+    },
+    "hashThenWriteLogRevert": {
+      "function": "hashThenWriteLogRevert",
+      "totalOpcodeSteps": 6944,
+      "maxDepth": 1,
+      "hasExternalCall": false,
+      "sloadCount": 1,
+      "sstoreCount": 1,
+      "firstSloadStep": 6725,
+      "firstSloadPc": 1877,
+      "firstSstoreStep": 6730,
+      "firstSstorePc": 1882,
+      "firstLogStep": 6819,
+      "firstCallStep": -1,
+      "keccakTotal": 256,
+      "keccakBeforeSload": 256,
+      "keccakAfterSload": 0,
+      "keccakBeforeSstore": 256,
+      "keccakAfterSstore": 0
+    }
+  }
+}

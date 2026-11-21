@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -16,7 +17,25 @@ import (
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/trie/utils"
 	"github.com/holiman/uint256"
+	dbm "github.com/cometbft/cometbft-db"
 	"github.com/phamhaian2508/project-pluto/internal/store"
+)
+
+// ReadOnlyKV là nguồn đọc chỉ-đọc (ví dụ *store.PebbleSnapshot) giúp eth_call/RPC đọc nhất quán 1 thời điểm.
+type ReadOnlyKV interface {
+	Get(key []byte) ([]byte, error)
+	Has(key []byte) (bool, error)
+	Iterator(start, end []byte) (dbm.Iterator, error)
+}
+
+type stateKV interface {
+	ReadOnlyKV
+}
+
+var (
+	// sentinel khác zero hash và EmptyRootHash để evm.create phát hiện address collision khi có storage != 0
+	nonEmptyStorageSentinel = crypto.Keccak256Hash([]byte("pluto-non-empty-storage-root"))
+	ripemdPrecompileAddr    = common.HexToAddress("0x0000000000000000000000000000000000000003")
 )
 
 // Account biểu diễn tài khoản EVM, được mã hóa bằng RLP khi lưu vào PebbleDB.
@@ -27,27 +46,58 @@ type Account struct {
 	CodeHash    []byte      // Mã băm bytecode; nil nếu là tài khoản EOA.
 }
 
+func isEmptyAccount(acc *Account) bool {
+	if acc == nil {
+		return true
+	}
+	balZero := acc.Balance == nil || acc.Balance.Sign() == 0
+	return acc.Nonce == 0 && balZero && len(acc.CodeHash) == 0
+}
+
 // Ảnh chụp / nhật ký
+
+const (
+	journalBalance = iota
+	journalNonce
+	journalStorage
+	journalCode
+	journalSelfDestruct
+	journalTransient
+	journalAccountCreate
+	journalTouch
+	journalAccessListAddr
+	journalAccessListSlot
+	journalNewContract
+)
 
 // journalEntry lưu thay đổi để có thể hoàn tác.
 type journalEntry struct {
-	typ int // 0=số dư, 1=nonce, 2=vùng lưu trữ, 3=mã, 4=tự hủy, 5=tạm thời.
-
+	typ  int
 	addr common.Address
 
 	prevBalance *big.Int
+	prevNonce   uint64
 
-	prevNonce uint64
+	key           common.Hash
+	prevVal       common.Hash
+	prevHadSlot   bool
+	prevDirtySlot bool
 
-	key     common.Hash
-	prevVal common.Hash
-
-	prevCode     []byte
-	prevCodeHash []byte
+	prevCode      []byte
+	prevHadCode   bool
+	prevCodeHash  []byte
+	prevDirtyCode bool
 
 	prevSelfDestructed bool
+	prevTransientVal   common.Hash
 
-	prevTransientVal common.Hash
+	prevAccount     *Account
+	prevExisted     bool
+	prevMissing     bool
+	prevDeleted     bool
+	prevDirtyAcc    bool
+	prevTouched     bool
+	prevNewContract bool
 }
 
 // snapshot lưu trạng thái tại một thời điểm.
@@ -61,23 +111,35 @@ type snapshot struct {
 // PebbleStateDB cài đặt vm.StateDB cho geth v1.16.
 type PebbleStateDB struct {
 	db *store.PebbleDB
+	// kv trỏ tới db ở production; test có thể thay bằng stub trả lỗi I/O để kiểm tra lan truyền lỗi đọc DB
+	kv stateKV
 	// overlayBase là ảnh chụp giao dịch/khối bất biến, dùng cho các TxState chạy
 	// lạc quan. Việc đọc dữ liệu này không làm thay đổi bộ đệm của trạng thái cha.
 	overlayBase *PebbleStateDB
 
-	// Bộ đệm tài khoản.
-	state map[common.Address]*Account
+	// dbErr ghi lại lỗi đọc Pebble đầu tiên để không âm thầm trả về tài khoản/slot rỗng
+	dbErrMu sync.Mutex
+	dbErr   error
+
+	// Bộ đệm tài khoản tồn tại trong trạng thái hiện tại.
+	state           map[common.Address]*Account
+	missingAccounts map[common.Address]bool // negative cache tránh lặp db.Get cho addr vắng
+	deletedAccounts map[common.Address]bool // đánh dấu account đã bị xóa trong block
+	storageCleared  map[common.Address]bool // account từng bị xóa -> không đọc slot cũ từ DB
 
 	// Bộ đệm mã hợp đồng.
 	code      map[common.Address][]byte
 	dirtyCode map[common.Address]bool // Đánh dấu mã cần chốt.
 
 	// Bộ đệm vùng lưu trữ.
-	storage      map[common.Address]map[common.Hash]common.Hash
-	dirtyStorage map[common.Address]map[common.Hash]bool // Đánh dấu ô lưu trữ cần chốt.
+	storage       map[common.Address]map[common.Hash]common.Hash
+	dirtyStorage  map[common.Address]map[common.Hash]bool // Đánh dấu ô lưu trữ cần chốt.
+	frozenStorage map[common.Address]bool                 // CoW flag: clone trước khi ghi nếu đã share qua ForkImmutable
 
-	// Tài khoản tự hủy.
+	// Tài khoản tự hủy và hợp đồng mới tạo trong tx hiện tại.
 	selfDestructed map[common.Address]bool
+	newContracts   map[common.Address]bool
+	txTouched      map[common.Address]bool // account được tạo/sửa/chạm trong tx hiện tại cho EIP-161 Finalise
 
 	// Vùng lưu trữ tạm (EIP-1153), xóa sau mỗi giao dịch.
 	transientStorage map[common.Address]map[common.Hash]common.Hash
@@ -96,7 +158,7 @@ type PebbleStateDB struct {
 	// Danh sách truy cập (EIP-2930).
 	accessList *accessList
 
-	// Đánh dấu các tài khoản đã đổi (để tính AppHash).
+	// Đánh dấu các tài khoản đã đổi (để tính AppHash / PendingWrites).
 	dirtyAccounts map[common.Address]bool
 
 	// Giá trị ô lưu trữ lúc bắt đầu giao dịch hiện tại (cho GetCommittedState, EIP-2200).
@@ -117,14 +179,34 @@ func newAccessList() *accessList {
 }
 
 func NewPebbleStateDB(db *store.PebbleDB) *PebbleStateDB {
+	var kv stateKV
+	if db != nil {
+		kv = db
+	}
+	return newPebbleStateDB(db, kv)
+}
+
+// NewPebbleStateDBFromKV tạo StateDB chỉ-đọc gắn với snapshot KV cố định (không hỗ trợ Commit).
+func NewPebbleStateDBFromKV(kv ReadOnlyKV) *PebbleStateDB {
+	return newPebbleStateDB(nil, kv)
+}
+
+func newPebbleStateDB(db *store.PebbleDB, kv stateKV) *PebbleStateDB {
 	return &PebbleStateDB{
 		db:               db,
+		kv:               kv,
 		state:            make(map[common.Address]*Account),
+		missingAccounts:  make(map[common.Address]bool),
+		deletedAccounts:  make(map[common.Address]bool),
+		storageCleared:   make(map[common.Address]bool),
 		code:             make(map[common.Address][]byte),
 		dirtyCode:        make(map[common.Address]bool),
 		storage:          make(map[common.Address]map[common.Hash]common.Hash),
 		dirtyStorage:     make(map[common.Address]map[common.Hash]bool),
+		frozenStorage:    make(map[common.Address]bool),
 		selfDestructed:   make(map[common.Address]bool),
+		newContracts:     make(map[common.Address]bool),
+		txTouched:        make(map[common.Address]bool),
 		transientStorage: make(map[common.Address]map[common.Hash]common.Hash),
 		logs:             make([]*types.Log, 0),
 		journal:          make([]journalEntry, 0, 64),
@@ -135,70 +217,204 @@ func NewPebbleStateDB(db *store.PebbleDB) *PebbleStateDB {
 	}
 }
 
+// recordDBError lưu lỗi đọc DB đầu tiên (thread-safe).
+func (s *PebbleStateDB) recordDBError(err error) {
+	if err == nil || s == nil {
+		return
+	}
+	s.dbErrMu.Lock()
+	if s.dbErr == nil {
+		s.dbErr = err
+	}
+	s.dbErrMu.Unlock()
+}
+
+// Err trả về lỗi đọc DB đã xảy ra trong phiên StateDB (hoặc overlayBase).
+func (s *PebbleStateDB) Err() error {
+	if s == nil {
+		return nil
+	}
+	s.dbErrMu.Lock()
+	err := s.dbErr
+	s.dbErrMu.Unlock()
+	if err != nil {
+		return err
+	}
+	if s.overlayBase != nil {
+		return s.overlayBase.Err()
+	}
+	return nil
+}
+
 // ============================================================
 // Hàm hỗ trợ nội bộ.
 // ============================================================
 
-func (s *PebbleStateDB) getAccount(addr common.Address) *Account {
+func cloneAccount(acc *Account) *Account {
+	if acc == nil {
+		return nil
+	}
+	clone := *acc
+	if acc.Balance != nil {
+		clone.Balance = new(big.Int).Set(acc.Balance)
+	} else {
+		clone.Balance = new(big.Int)
+	}
+	clone.CodeHash = append([]byte(nil), acc.CodeHash...)
+	return &clone
+}
+
+// loadAccount đọc tài khoản đã tồn tại mà không tạo tài khoản rỗng trong s.state.
+func (s *PebbleStateDB) loadAccount(addr common.Address) (*Account, bool) {
+	if s.deletedAccounts[addr] {
+		return nil, false
+	}
 	if acc, ok := s.state[addr]; ok {
-		return acc
+		return acc, true
+	}
+	if s.missingAccounts[addr] {
+		return nil, false
 	}
 	if s.overlayBase != nil {
-		acc := s.overlayBase.accountSnapshot(addr)
-		s.state[addr] = acc
-		return acc
-	}
-
-	// Khóa cơ sở dữ liệu: "acc-" + địa chỉ.
-	key := append([]byte("acc-"), addr.Bytes()...)
-	data, _ := s.db.Get(key)
-
-	if len(data) == 0 {
-		// Tạo tài khoản mới nếu chưa tồn tại.
-		acc := &Account{
-			Nonce:       0,
-			Balance:     big.NewInt(0),
-			StorageRoot: common.Hash{},
-			CodeHash:    nil,
+		acc, ok, err := s.overlayBase.accountSnapshot(addr)
+		if err != nil {
+			s.recordDBError(err)
+			return nil, false
+		}
+		if !ok {
+			s.missingAccounts[addr] = true
+			return nil, false
 		}
 		s.state[addr] = acc
-		return acc
+		return acc, true
+	}
+	if s.kv == nil {
+		s.missingAccounts[addr] = true
+		return nil, false
 	}
 
-	// Giải mã RLP.
+	key := append([]byte("acc-"), addr.Bytes()...)
+	data, err := s.kv.Get(key)
+	if err != nil {
+		s.recordDBError(fmt.Errorf("db get account %s: %w", addr.Hex(), err))
+		return nil, false
+	}
+	if len(data) == 0 {
+		s.missingAccounts[addr] = true
+		return nil, false
+	}
+
 	var acc Account
 	if err := rlp.DecodeBytes(data, &acc); err != nil {
-	panic(err) // Dừng chương trình nếu dữ liệu bị hỏng.
+		s.recordDBError(fmt.Errorf("decode account %s: %w", addr.Hex(), err))
+		return nil, false
+	}
+	if acc.Balance == nil {
+		acc.Balance = new(big.Int)
 	}
 	s.state[addr] = &acc
-	return &acc
+	return &acc, true
+}
+
+// existedInBase kiểm tra tài khoản có tồn tại trong overlayBase hoặc PebbleDB gốc trước block hay không.
+func (s *PebbleStateDB) existedInBase(addr common.Address) bool {
+	if s.overlayBase != nil {
+		_, ok, err := s.overlayBase.accountSnapshot(addr)
+		if err != nil {
+			s.recordDBError(err)
+			return false
+		}
+		return ok
+	}
+	if s.kv == nil {
+		return false
+	}
+	has, err := s.kv.Has(append([]byte("acc-"), addr.Bytes()...))
+	if err != nil {
+		s.recordDBError(fmt.Errorf("db has account %s: %w", addr.Hex(), err))
+		return false
+	}
+	return has
+}
+
+// getOrCreateAccount trả về tài khoản hiện có hoặc tạo mới có ghi journal để RevertToSnapshot hoàn tác sạch.
+func (s *PebbleStateDB) getOrCreateAccount(addr common.Address) *Account {
+	if acc, ok := s.loadAccount(addr); ok {
+		return acc
+	}
+	prevAcc, prevExisted := s.state[addr]
+	s.journal = append(s.journal, journalEntry{
+		typ:          journalAccountCreate,
+		addr:         addr,
+		prevAccount:  cloneAccount(prevAcc),
+		prevExisted:  prevExisted,
+		prevMissing:  s.missingAccounts[addr],
+		prevDeleted:  s.deletedAccounts[addr],
+		prevDirtyAcc: s.dirtyAccounts[addr],
+		prevTouched:  s.txTouched[addr],
+	})
+	acc := &Account{
+		Nonce:       0,
+		Balance:     big.NewInt(0),
+		StorageRoot: common.Hash{},
+		CodeHash:    nil,
+	}
+	s.state[addr] = acc
+	delete(s.missingAccounts, addr)
+	delete(s.deletedAccounts, addr)
+	s.txTouched[addr] = true
+	return acc
+}
+
+// getAccount giữ tương thích nội bộ: trả tài khoản (tạo mới nếu chưa có).
+func (s *PebbleStateDB) getAccount(addr common.Address) *Account {
+	return s.getOrCreateAccount(addr)
 }
 
 // accountSnapshot đọc tài khoản mà không điền vào các bộ đệm có thể thay đổi
-// của StateDB nguồn. Có thể dùng an toàn cho nhiều lượt đọc lạc quan đồng thời
-// khi trạng thái chuẩn chưa được phân giải.
-func (s *PebbleStateDB) accountSnapshot(addr common.Address) *Account {
-	if acc, ok := s.state[addr]; ok {
-		clone := *acc
-		if acc.Balance != nil {
-			clone.Balance = new(big.Int).Set(acc.Balance)
-		}
-		clone.CodeHash = append([]byte(nil), acc.CodeHash...)
-		return &clone
+// của StateDB nguồn. An toàn cho nhiều goroutine đọc đồng thời.
+func (s *PebbleStateDB) accountSnapshot(addr common.Address) (*Account, bool, error) {
+	if s.deletedAccounts[addr] {
+		return nil, false, nil
 	}
-	data, _ := s.db.Get(append([]byte("acc-"), addr.Bytes()...))
+	if acc, ok := s.state[addr]; ok {
+		return cloneAccount(acc), true, nil
+	}
+	if s.missingAccounts[addr] {
+		return nil, false, nil
+	}
+	if s.overlayBase != nil {
+		return s.overlayBase.accountSnapshot(addr)
+	}
+	if s.kv == nil {
+		return nil, false, nil
+	}
+	data, err := s.kv.Get(append([]byte("acc-"), addr.Bytes()...))
+	if err != nil {
+		return nil, false, fmt.Errorf("db get account snapshot %s: %w", addr.Hex(), err)
+	}
 	if len(data) == 0 {
-		return &Account{Balance: new(big.Int)}
+		return nil, false, nil
 	}
 	var account Account
 	if err := rlp.DecodeBytes(data, &account); err != nil {
-		panic(err)
+		return nil, false, fmt.Errorf("decode account snapshot %s: %w", addr.Hex(), err)
 	}
 	if account.Balance == nil {
 		account.Balance = new(big.Int)
 	}
 	account.CodeHash = append([]byte(nil), account.CodeHash...)
-	return &account
+	return &account, true, nil
+}
+
+func (s *PebbleStateDB) ensureMutableStorage(addr common.Address) {
+	if !s.frozenStorage[addr] {
+		return
+	}
+	if slots, ok := s.storage[addr]; ok {
+		s.storage[addr] = cloneHashMap(slots)
+	}
+	delete(s.frozenStorage, addr)
 }
 
 // storageKey tạo khóa vùng lưu trữ trong cơ sở dữ liệu: "storage-" + địa chỉ + khóa.
@@ -210,6 +426,24 @@ func storageKey(addr common.Address, key common.Hash) []byte {
 	return k
 }
 
+func storagePrefix(addr common.Address) []byte {
+	k := make([]byte, 0, 8+20)
+	k = append(k, []byte("storage-")...)
+	k = append(k, addr.Bytes()...)
+	return k
+}
+
+func prefixUpperBound(prefix []byte) []byte {
+	out := append([]byte(nil), prefix...)
+	for i := len(out) - 1; i >= 0; i-- {
+		if out[i] < 0xff {
+			out[i]++
+			return out[:i+1]
+		}
+	}
+	return nil
+}
+
 // codeKey tạo khóa mã hợp đồng trong cơ sở dữ liệu: "code-" + địa chỉ.
 func codeKey(addr common.Address) []byte {
 	k := make([]byte, 0, 5+20)
@@ -218,9 +452,21 @@ func codeKey(addr common.Address) []byte {
 	return k
 }
 
-// markDirty đánh dấu tài khoản đã thay đổi để tính AppHash.
+// markDirty đánh dấu tài khoản đã thay đổi để tính AppHash / PendingWrites.
 func (s *PebbleStateDB) markDirty(addr common.Address) {
 	s.dirtyAccounts[addr] = true
+	s.txTouched[addr] = true
+}
+
+func (s *PebbleStateDB) touchAccount(addr common.Address) {
+	if !s.txTouched[addr] {
+		s.journal = append(s.journal, journalEntry{
+			typ:         journalTouch,
+			addr:        addr,
+			prevTouched: false,
+		})
+		s.txTouched[addr] = true
+	}
 }
 
 // ============================================================
@@ -228,33 +474,61 @@ func (s *PebbleStateDB) markDirty(addr common.Address) {
 // ============================================================
 
 func (s *PebbleStateDB) CreateAccount(addr common.Address) {
-	acc := s.getAccount(addr)
-	// Đặt lại trạng thái của địa chỉ mới nhưng giữ số dư (EIP-161).
-	acc.Nonce = 0
-	acc.CodeHash = nil
-	acc.StorageRoot = common.Hash{}
-	s.dirtyAccounts[addr] = true
+	prevAcc, prevExisted := s.loadAccount(addr)
+	s.journal = append(s.journal, journalEntry{
+		typ:          journalAccountCreate,
+		addr:         addr,
+		prevAccount:  cloneAccount(prevAcc),
+		prevExisted:  prevExisted,
+		prevMissing:  s.missingAccounts[addr],
+		prevDeleted:  s.deletedAccounts[addr],
+		prevDirtyAcc: s.dirtyAccounts[addr],
+		prevTouched:  s.txTouched[addr],
+	})
+	bal := big.NewInt(0)
+	if prevExisted && prevAcc != nil && prevAcc.Balance != nil {
+		// giữ số dư có sẵn khi tạo tài khoản (EIP-161)
+		bal = new(big.Int).Set(prevAcc.Balance)
+	}
+	s.state[addr] = &Account{
+		Nonce:       0,
+		Balance:     bal,
+		StorageRoot: common.Hash{},
+		CodeHash:    nil,
+	}
+	delete(s.missingAccounts, addr)
+	delete(s.deletedAccounts, addr)
 	s.markDirty(addr)
 }
 
 func (s *PebbleStateDB) CreateContract(addr common.Address) {
-	acc := s.getAccount(addr)
-	acc.Nonce = 1 // Nonce của hợp đồng bắt đầu từ 1 (EIP-161).
-	s.markDirty(addr)
+	// Geth evm.create tự gọi SetNonce(addr, 1) ngay sau CreateContract; chỉ đánh dấu newContract cho EIP-6780
+	if !s.newContracts[addr] {
+		s.journal = append(s.journal, journalEntry{
+			typ:             journalNewContract,
+			addr:            addr,
+			prevNewContract: false,
+		})
+		s.newContracts[addr] = true
+	}
 }
 
 // --- Số dư ---
 
 func (s *PebbleStateDB) SubBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) uint256.Int {
-	acc := s.getAccount(addr)
+	if amount == nil || amount.IsZero() {
+		return *s.GetBalance(addr)
+	}
+	acc := s.getOrCreateAccount(addr)
 	prev := new(uint256.Int)
 	prev.SetFromBig(acc.Balance)
 
-	// Ghi vào nhật ký để có thể hoàn tác.
 	s.journal = append(s.journal, journalEntry{
-		typ:         0,
-		addr:        addr,
-		prevBalance: new(big.Int).Set(acc.Balance),
+		typ:          journalBalance,
+		addr:         addr,
+		prevBalance:  new(big.Int).Set(acc.Balance),
+		prevDirtyAcc: s.dirtyAccounts[addr],
+		prevTouched:  s.txTouched[addr],
 	})
 
 	acc.Balance.Sub(acc.Balance, amount.ToBig())
@@ -263,15 +537,29 @@ func (s *PebbleStateDB) SubBalance(addr common.Address, amount *uint256.Int, rea
 }
 
 func (s *PebbleStateDB) AddBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) uint256.Int {
-	acc := s.getAccount(addr)
+	if amount == nil || amount.IsZero() {
+		acc, ok := s.loadAccount(addr)
+		if !ok || isEmptyAccount(acc) {
+			// giữ đúng EIP-161: AddBalance(0) lên account rỗng chỉ chạm để Finalise(true) xóa, không giữ account rỗng
+			if ok || addr == ripemdPrecompileAddr {
+				s.touchAccount(addr)
+			}
+			return uint256.Int{}
+		}
+		prev := new(uint256.Int)
+		prev.SetFromBig(acc.Balance)
+		return *prev
+	}
+	acc := s.getOrCreateAccount(addr)
 	prev := new(uint256.Int)
 	prev.SetFromBig(acc.Balance)
 
-	// Ghi vào nhật ký để có thể hoàn tác.
 	s.journal = append(s.journal, journalEntry{
-		typ:         0,
-		addr:        addr,
-		prevBalance: new(big.Int).Set(acc.Balance),
+		typ:          journalBalance,
+		addr:         addr,
+		prevBalance:  new(big.Int).Set(acc.Balance),
+		prevDirtyAcc: s.dirtyAccounts[addr],
+		prevTouched:  s.txTouched[addr],
 	})
 
 	acc.Balance.Add(acc.Balance, amount.ToBig())
@@ -280,7 +568,10 @@ func (s *PebbleStateDB) AddBalance(addr common.Address, amount *uint256.Int, rea
 }
 
 func (s *PebbleStateDB) GetBalance(addr common.Address) *uint256.Int {
-	acc := s.getAccount(addr)
+	acc, ok := s.loadAccount(addr)
+	if !ok || acc == nil || acc.Balance == nil {
+		return new(uint256.Int)
+	}
 	bal := new(uint256.Int)
 	bal.SetFromBig(acc.Balance)
 	return bal
@@ -289,18 +580,22 @@ func (s *PebbleStateDB) GetBalance(addr common.Address) *uint256.Int {
 // --- Số thứ tự giao dịch (nonce) ---
 
 func (s *PebbleStateDB) GetNonce(addr common.Address) uint64 {
-	acc := s.getAccount(addr)
+	acc, ok := s.loadAccount(addr)
+	if !ok || acc == nil {
+		return 0
+	}
 	return acc.Nonce
 }
 
 func (s *PebbleStateDB) SetNonce(addr common.Address, nonce uint64, reason tracing.NonceChangeReason) {
-	acc := s.getAccount(addr)
+	acc := s.getOrCreateAccount(addr)
 
-	// Ghi vào nhật ký để có thể hoàn tác.
 	s.journal = append(s.journal, journalEntry{
-		typ:       1,
-		addr:      addr,
-		prevNonce: acc.Nonce,
+		typ:          journalNonce,
+		addr:         addr,
+		prevNonce:    acc.Nonce,
+		prevDirtyAcc: s.dirtyAccounts[addr],
+		prevTouched:  s.txTouched[addr],
 	})
 
 	acc.Nonce = nonce
@@ -310,62 +605,79 @@ func (s *PebbleStateDB) SetNonce(addr common.Address, nonce uint64, reason traci
 // --- Mã (bytecode hợp đồng thông minh) ---
 
 func (s *PebbleStateDB) GetCodeHash(addr common.Address) common.Hash {
-	acc := s.getAccount(addr)
+	acc, ok := s.loadAccount(addr)
+	if !ok || acc == nil {
+		// EIP-1052: tài khoản không tồn tại trả zero hash
+		return common.Hash{}
+	}
 	if len(acc.CodeHash) == 0 {
-		// Tài khoản EOA hoặc chưa có mã: trả về mã băm rỗng theo quy định EVM.
-		return common.BytesToHash(crypto.Keccak256(nil))
+		return types.EmptyCodeHash
 	}
 	return common.BytesToHash(acc.CodeHash)
 }
 
 func (s *PebbleStateDB) GetCode(addr common.Address) []byte {
-	// Kiểm tra bộ đệm.
+	if s.deletedAccounts[addr] {
+		return nil
+	}
 	if code, ok := s.code[addr]; ok {
 		return append([]byte(nil), code...)
 	}
+	if s.storageCleared[addr] {
+		return nil
+	}
 	if s.overlayBase != nil {
-		data := s.overlayBase.codeSnapshot(addr)
+		data, err := s.overlayBase.codeSnapshot(addr)
+		if err != nil {
+			s.recordDBError(err)
+			return nil
+		}
 		s.code[addr] = data
 		return append([]byte(nil), data...)
 	}
-
-	// Kiểm tra cơ sở dữ liệu.
-	data, _ := s.db.Get(codeKey(addr))
-	if len(data) > 0 {
-		s.code[addr] = data // Lưu lại vào bộ đệm.
-		return append([]byte(nil), data...)
+	if s.kv == nil {
+		return nil
 	}
 
+	data, err := s.kv.Get(codeKey(addr))
+	if err != nil {
+		s.recordDBError(fmt.Errorf("db get code %s: %w", addr.Hex(), err))
+		return nil
+	}
+	if len(data) > 0 {
+		s.code[addr] = data
+		return append([]byte(nil), data...)
+	}
 	return nil
 }
 
 func (s *PebbleStateDB) SetCode(addr common.Address, code []byte, reason tracing.CodeChangeReason) []byte {
-	acc := s.getAccount(addr)
+	acc := s.getOrCreateAccount(addr)
+	prevCode := s.GetCode(addr)
+	_, prevHadCode := s.code[addr]
 
-	// Ghi vào nhật ký để có thể hoàn tác.
 	s.journal = append(s.journal, journalEntry{
-		typ:          3,
-		addr:         addr,
-		prevCode:     s.GetCode(addr),
-		prevCodeHash: acc.CodeHash,
+		typ:           journalCode,
+		addr:          addr,
+		prevCode:      prevCode,
+		prevHadCode:   prevHadCode,
+		prevCodeHash:  append([]byte(nil), acc.CodeHash...),
+		prevDirtyCode: s.dirtyCode[addr],
+		prevDirtyAcc:  s.dirtyAccounts[addr],
+		prevTouched:   s.txTouched[addr],
 	})
 
-	// Lưu vào bộ đệm.
-	s.code[addr] = code
+	s.code[addr] = append([]byte(nil), code...)
 	s.dirtyCode[addr] = true
 
-	// Cập nhật mã băm của mã hợp đồng.
 	if len(code) > 0 {
-		hash := crypto.Keccak256(code)
-		acc.CodeHash = hash
+		acc.CodeHash = crypto.Keccak256(code)
 	} else {
 		acc.CodeHash = nil
 	}
 
 	s.markDirty(addr)
-
-	// go-ethereum v1.16 trả về mã băm mã hợp đồng cũ.
-	return append([]byte(nil), acc.CodeHash...)
+	return prevCode
 }
 
 func (s *PebbleStateDB) GetCodeSize(addr common.Address) int {
@@ -392,32 +704,46 @@ func (s *PebbleStateDB) GetRefund() uint64 {
 
 // --- Vùng lưu trữ hợp đồng (SLOAD/SSTORE) ---
 
-// getStorage đọc ô lưu trữ (bộ đệm trước, rồi đến cơ sở dữ liệu).
+// getStorage đọc ô lưu trữ (bộ đệm trước, rồi đến overlayBase / cơ sở dữ liệu).
 func (s *PebbleStateDB) getStorage(addr common.Address, key common.Hash) common.Hash {
-	// Kiểm tra bộ đệm.
+	if s.deletedAccounts[addr] {
+		return common.Hash{}
+	}
 	if slots, ok := s.storage[addr]; ok {
 		if val, ok := slots[key]; ok {
 			return val
 		}
 	}
+	if s.storageCleared[addr] {
+		return common.Hash{}
+	}
 	if s.overlayBase != nil {
-		value := s.overlayBase.storageSnapshot(addr, key)
+		value, err := s.overlayBase.storageSnapshot(addr, key)
+		if err != nil {
+			s.recordDBError(err)
+			return common.Hash{}
+		}
+		s.ensureMutableStorage(addr)
 		if s.storage[addr] == nil {
 			s.storage[addr] = make(map[common.Hash]common.Hash)
 		}
 		s.storage[addr][key] = value
 		return value
 	}
-
-	// Đọc cơ sở dữ liệu.
-	data, _ := s.db.Get(storageKey(addr, key))
-	if len(data) == 0 {
+	if s.kv == nil {
 		return common.Hash{}
 	}
 
-	val := common.BytesToHash(data)
-
-	// Lưu vào bộ đệm nhưng chưa đánh dấu cần ghi.
+	data, err := s.kv.Get(storageKey(addr, key))
+	if err != nil {
+		s.recordDBError(fmt.Errorf("db get storage %s[%s]: %w", addr.Hex(), key.Hex(), err))
+		return common.Hash{}
+	}
+	var val common.Hash
+	if len(data) > 0 {
+		val = common.BytesToHash(data)
+	}
+	s.ensureMutableStorage(addr)
 	if s.storage[addr] == nil {
 		s.storage[addr] = make(map[common.Hash]common.Hash)
 	}
@@ -425,25 +751,55 @@ func (s *PebbleStateDB) getStorage(addr common.Address, key common.Hash) common.
 	return val
 }
 
-func (s *PebbleStateDB) codeSnapshot(addr common.Address) []byte {
-	if code, ok := s.code[addr]; ok {
-		return append([]byte(nil), code...)
+func (s *PebbleStateDB) codeSnapshot(addr common.Address) ([]byte, error) {
+	if s.deletedAccounts[addr] {
+		return nil, nil
 	}
-	code, _ := s.db.Get(codeKey(addr))
-	return append([]byte(nil), code...)
+	if code, ok := s.code[addr]; ok {
+		return append([]byte(nil), code...), nil
+	}
+	if s.storageCleared[addr] {
+		return nil, nil
+	}
+	if s.overlayBase != nil {
+		return s.overlayBase.codeSnapshot(addr)
+	}
+	if s.kv == nil {
+		return nil, nil
+	}
+	code, err := s.kv.Get(codeKey(addr))
+	if err != nil {
+		return nil, fmt.Errorf("db get code snapshot %s: %w", addr.Hex(), err)
+	}
+	return append([]byte(nil), code...), nil
 }
 
-func (s *PebbleStateDB) storageSnapshot(addr common.Address, key common.Hash) common.Hash {
+func (s *PebbleStateDB) storageSnapshot(addr common.Address, key common.Hash) (common.Hash, error) {
+	if s.deletedAccounts[addr] {
+		return common.Hash{}, nil
+	}
 	if slots, ok := s.storage[addr]; ok {
 		if value, found := slots[key]; found {
-			return value
+			return value, nil
 		}
 	}
-	data, _ := s.db.Get(storageKey(addr, key))
-	if len(data) == 0 {
-		return common.Hash{}
+	if s.storageCleared[addr] {
+		return common.Hash{}, nil
 	}
-	return common.BytesToHash(data)
+	if s.overlayBase != nil {
+		return s.overlayBase.storageSnapshot(addr, key)
+	}
+	if s.kv == nil {
+		return common.Hash{}, nil
+	}
+	data, err := s.kv.Get(storageKey(addr, key))
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("db get storage snapshot %s[%s]: %w", addr.Hex(), key.Hex(), err)
+	}
+	if len(data) == 0 {
+		return common.Hash{}, nil
+	}
+	return common.BytesToHash(data), nil
 }
 
 // GetCommittedState trả về giá trị ô lưu trữ tại lúc bắt đầu giao dịch hiện tại
@@ -454,7 +810,6 @@ func (s *PebbleStateDB) GetCommittedState(addr common.Address, key common.Hash) 
 			return v
 		}
 	}
-	// Chưa được ghi trong giao dịch này nên giá trị hiện tại cũng là giá trị đầu giao dịch.
 	return s.getStorage(addr, key)
 }
 
@@ -467,6 +822,7 @@ func (s *PebbleStateDB) GetState(addr common.Address, key common.Hash) common.Ha
 }
 
 func (s *PebbleStateDB) SetState(addr common.Address, key, value common.Hash) common.Hash {
+	_ = s.getOrCreateAccount(addr)
 	prev := s.GetState(addr, key)
 
 	// Ghi nhớ giá trị đầu giao dịch của ô lưu trữ (chỉ ghi nhớ lần ghi đầu tiên).
@@ -477,21 +833,32 @@ func (s *PebbleStateDB) SetState(addr common.Address, key, value common.Hash) co
 		s.originStorage[addr][key] = prev
 	}
 
-	// Ghi vào nhật ký để có thể hoàn tác.
+	prevHadSlot := false
+	if slots, ok := s.storage[addr]; ok {
+		_, prevHadSlot = slots[key]
+	}
+	prevDirtySlot := false
+	if slots, ok := s.dirtyStorage[addr]; ok {
+		prevDirtySlot = slots[key]
+	}
+
 	s.journal = append(s.journal, journalEntry{
-		typ:     2,
-		addr:    addr,
-		key:     key,
-		prevVal: prev,
+		typ:           journalStorage,
+		addr:          addr,
+		key:           key,
+		prevVal:       prev,
+		prevHadSlot:   prevHadSlot,
+		prevDirtySlot: prevDirtySlot,
+		prevDirtyAcc:  s.dirtyAccounts[addr],
+		prevTouched:   s.txTouched[addr],
 	})
 
-	// Ghi vào bộ đệm.
+	s.ensureMutableStorage(addr)
 	if s.storage[addr] == nil {
 		s.storage[addr] = make(map[common.Hash]common.Hash)
 	}
 	s.storage[addr][key] = value
 
-	// Đánh dấu cần ghi xuống cơ sở dữ liệu.
 	if s.dirtyStorage[addr] == nil {
 		s.dirtyStorage[addr] = make(map[common.Hash]bool)
 	}
@@ -501,9 +868,59 @@ func (s *PebbleStateDB) SetState(addr common.Address, key, value common.Hash) co
 	return prev
 }
 
+// GetStorageRoot phân biệt storage rỗng (EmptyRootHash) với storage có slot != 0 để evm.create bắt collision đúng chuẩn Shanghai.
 func (s *PebbleStateDB) GetStorageRoot(addr common.Address) common.Hash {
-	// Giá trị giữ chỗ (chưa có cây Merkle).
-	return common.Hash{}
+	if !s.Exist(addr) {
+		return common.Hash{}
+	}
+	overridden := make(map[common.Hash]bool)
+	cur := s
+	for cur != nil {
+		if cur.deletedAccounts[addr] {
+			return types.EmptyRootHash
+		}
+		if slots, ok := cur.storage[addr]; ok {
+			for slot, val := range slots {
+				if overridden[slot] {
+					continue
+				}
+				overridden[slot] = true
+				if val != (common.Hash{}) {
+					return nonEmptyStorageSentinel
+				}
+			}
+		}
+		if cur.storageCleared[addr] {
+			return types.EmptyRootHash
+		}
+		cur = cur.overlayBase
+	}
+	if s.db != nil {
+		prefix := storagePrefix(addr)
+		iter, err := s.db.Iterator(prefix, prefixUpperBound(prefix))
+		if err != nil {
+			s.recordDBError(fmt.Errorf("db iter storage root %s: %w", addr.Hex(), err))
+			return types.EmptyRootHash
+		}
+		defer iter.Close()
+		for ; iter.Valid(); iter.Next() {
+			k := iter.Key()
+			if len(k) != len(prefix)+common.HashLength {
+				continue
+			}
+			slot := common.BytesToHash(k[len(prefix):])
+			if overridden[slot] {
+				continue
+			}
+			if common.BytesToHash(iter.Value()) != (common.Hash{}) {
+				return nonEmptyStorageSentinel
+			}
+		}
+		if err := iter.Error(); err != nil {
+			s.recordDBError(fmt.Errorf("db iter storage root err %s: %w", addr.Hex(), err))
+		}
+	}
+	return types.EmptyRootHash
 }
 
 // --- Vùng lưu trữ tạm thời (EIP-1153) ---
@@ -516,9 +933,8 @@ func (s *PebbleStateDB) GetTransientState(addr common.Address, key common.Hash) 
 }
 
 func (s *PebbleStateDB) SetTransientState(addr common.Address, key, value common.Hash) {
-	// Ghi vào nhật ký để có thể hoàn tác.
 	s.journal = append(s.journal, journalEntry{
-		typ:              5,
+		typ:              journalTransient,
 		addr:             addr,
 		key:              key,
 		prevTransientVal: s.GetTransientState(addr, key),
@@ -533,20 +949,23 @@ func (s *PebbleStateDB) SetTransientState(addr common.Address, key, value common
 // --- Tự hủy tài khoản ---
 
 func (s *PebbleStateDB) SelfDestruct(addr common.Address) uint256.Int {
+	acc, ok := s.loadAccount(addr)
+	if !ok || acc == nil {
+		return uint256.Int{}
+	}
 	bal := s.GetBalance(addr)
 
-	// Ghi vào nhật ký.
 	s.journal = append(s.journal, journalEntry{
-		typ:                4,
+		typ:                journalSelfDestruct,
 		addr:               addr,
 		prevSelfDestructed: s.selfDestructed[addr],
-		prevBalance:        new(big.Int).Set(s.getAccount(addr).Balance),
+		prevBalance:        new(big.Int).Set(acc.Balance),
+		prevDirtyAcc:       s.dirtyAccounts[addr],
+		prevTouched:        s.txTouched[addr],
 	})
 
 	s.selfDestructed[addr] = true
-
-	// Đặt số dư về 0.
-	s.getAccount(addr).Balance = big.NewInt(0)
+	acc.Balance = big.NewInt(0)
 	s.markDirty(addr)
 	return *bal
 }
@@ -556,60 +975,47 @@ func (s *PebbleStateDB) HasSelfDestructed(addr common.Address) bool {
 }
 
 func (s *PebbleStateDB) SelfDestruct6780(addr common.Address) (uint256.Int, bool) {
-	bal := s.GetBalance(addr)
-
-	// EIP-6780: chỉ đặt số dư về 0, không xóa tài khoản.
-	s.journal = append(s.journal, journalEntry{
-		typ:                4,
-		addr:               addr,
-		prevSelfDestructed: s.selfDestructed[addr],
-		prevBalance:        new(big.Int).Set(s.getAccount(addr).Balance),
-	})
-
-	s.selfDestructed[addr] = true
-	s.getAccount(addr).Balance = big.NewInt(0)
-	s.markDirty(addr)
-	return *bal, false
+	acc, ok := s.loadAccount(addr)
+	if !ok || acc == nil {
+		return uint256.Int{}, false
+	}
+	if s.newContracts[addr] {
+		return s.SelfDestruct(addr), true
+	}
+	return *s.GetBalance(addr), false
 }
 
 // --- Sự tồn tại của tài khoản ---
 
 func (s *PebbleStateDB) Exist(addr common.Address) bool {
-	acc := s.getAccount(addr)
-	// Tài khoản được xem là tồn tại nếu có trạng thái.
-	return acc.Nonce > 0 || acc.Balance.Sign() > 0 || len(acc.CodeHash) > 0
+	_, ok := s.loadAccount(addr)
+	return ok
 }
 
 func (s *PebbleStateDB) Empty(addr common.Address) bool {
-	acc := s.getAccount(addr)
-	return acc.Nonce == 0 && acc.Balance.Sign() == 0 && len(acc.CodeHash) == 0
+	acc, ok := s.loadAccount(addr)
+	return !ok || isEmptyAccount(acc)
 }
 
 // --- Danh sách truy cập trạng thái (EIP-2929) ---
 
 func (s *PebbleStateDB) Prepare(rules params.Rules, sender, coinbase common.Address, dest *common.Address, precompiles []common.Address, txAccesses types.AccessList) {
-	// Đặt lại danh sách truy cập ở mỗi giao dịch.
 	s.accessList = newAccessList()
 
-	// Địa chỉ người gửi luôn được làm nóng.
 	s.accessList.addresses[sender] = true
 
-	// Địa chỉ Coinbase được làm nóng (EIP-3651).
 	if rules.IsShanghai {
 		s.accessList.addresses[coinbase] = true
 	}
 
-	// Địa chỉ đích được làm nóng.
 	if dest != nil {
 		s.accessList.addresses[*dest] = true
 	}
 
-	// Các hợp đồng dựng sẵn được làm nóng.
 	for _, addr := range precompiles {
 		s.accessList.addresses[addr] = true
 	}
 
-	// Danh sách truy cập EIP-2930.
 	for _, entry := range txAccesses {
 		s.accessList.addresses[entry.Address] = true
 		if s.accessList.slots[entry.Address] == nil {
@@ -620,7 +1026,6 @@ func (s *PebbleStateDB) Prepare(rules params.Rules, sender, coinbase common.Addr
 		}
 	}
 
-	// Đặt lại vùng lưu trữ tạm (EIP-1153).
 	s.transientStorage = make(map[common.Address]map[common.Hash]common.Hash)
 }
 
@@ -640,15 +1045,34 @@ func (s *PebbleStateDB) SlotInAccessList(addr common.Address, slot common.Hash) 
 }
 
 func (s *PebbleStateDB) AddAddressToAccessList(addr common.Address) {
-	s.accessList.addresses[addr] = true
+	if !s.accessList.addresses[addr] {
+		s.accessList.addresses[addr] = true
+		s.journal = append(s.journal, journalEntry{
+			typ:  journalAccessListAddr,
+			addr: addr,
+		})
+	}
 }
 
 func (s *PebbleStateDB) AddSlotToAccessList(addr common.Address, slot common.Hash) {
-	s.accessList.addresses[addr] = true
+	if !s.accessList.addresses[addr] {
+		s.accessList.addresses[addr] = true
+		s.journal = append(s.journal, journalEntry{
+			typ:  journalAccessListAddr,
+			addr: addr,
+		})
+	}
 	if s.accessList.slots[addr] == nil {
 		s.accessList.slots[addr] = make(map[common.Hash]bool)
 	}
-	s.accessList.slots[addr][slot] = true
+	if !s.accessList.slots[addr][slot] {
+		s.accessList.slots[addr][slot] = true
+		s.journal = append(s.journal, journalEntry{
+			typ:  journalAccessListSlot,
+			addr: addr,
+			key:  slot,
+		})
+	}
 }
 
 // --- Ảnh chụp / hoàn tác ---
@@ -679,43 +1103,107 @@ func (s *PebbleStateDB) RevertToSnapshot(revid int) {
 
 	snap := s.snapshots[idx]
 
-	// Hoàn tác nhật ký theo thứ tự ngược.
 	for i := len(s.journal) - 1; i >= snap.journalLen; i-- {
 		entry := s.journal[i]
 		switch entry.typ {
-		case 0: // Số dư.
-			s.getAccount(entry.addr).Balance = entry.prevBalance
-		case 1: // Nonce.
-			s.getAccount(entry.addr).Nonce = entry.prevNonce
-		case 2: // Vùng lưu trữ.
-			if s.storage[entry.addr] == nil {
-				s.storage[entry.addr] = make(map[common.Hash]common.Hash)
+		case journalBalance:
+			if acc := s.state[entry.addr]; acc != nil {
+				acc.Balance = entry.prevBalance
 			}
-			s.storage[entry.addr][entry.key] = entry.prevVal
-		case 3: // Mã hợp đồng.
-			acc := s.getAccount(entry.addr)
-			if entry.prevCode != nil {
+			restoreBoolMap(s.dirtyAccounts, entry.addr, entry.prevDirtyAcc)
+			restoreBoolMap(s.txTouched, entry.addr, entry.prevTouched)
+		case journalNonce:
+			if acc := s.state[entry.addr]; acc != nil {
+				acc.Nonce = entry.prevNonce
+			}
+			restoreBoolMap(s.dirtyAccounts, entry.addr, entry.prevDirtyAcc)
+			restoreBoolMap(s.txTouched, entry.addr, entry.prevTouched)
+		case journalStorage:
+			s.ensureMutableStorage(entry.addr)
+			if entry.prevHadSlot {
+				if s.storage[entry.addr] == nil {
+					s.storage[entry.addr] = make(map[common.Hash]common.Hash)
+				}
+				s.storage[entry.addr][entry.key] = entry.prevVal
+			} else if s.storage[entry.addr] != nil {
+				delete(s.storage[entry.addr], entry.key)
+			}
+			if entry.prevDirtySlot {
+				if s.dirtyStorage[entry.addr] == nil {
+					s.dirtyStorage[entry.addr] = make(map[common.Hash]bool)
+				}
+				s.dirtyStorage[entry.addr][entry.key] = true
+			} else if s.dirtyStorage[entry.addr] != nil {
+				delete(s.dirtyStorage[entry.addr], entry.key)
+				if len(s.dirtyStorage[entry.addr]) == 0 {
+					delete(s.dirtyStorage, entry.addr)
+				}
+			}
+			restoreBoolMap(s.dirtyAccounts, entry.addr, entry.prevDirtyAcc)
+			restoreBoolMap(s.txTouched, entry.addr, entry.prevTouched)
+		case journalCode:
+			if acc := s.state[entry.addr]; acc != nil {
+				acc.CodeHash = entry.prevCodeHash
+			}
+			if entry.prevHadCode {
 				s.code[entry.addr] = entry.prevCode
 			} else {
 				delete(s.code, entry.addr)
 			}
-			acc.CodeHash = entry.prevCodeHash
-		case 4: // Tự hủy tài khoản.
-			s.selfDestructed[entry.addr] = entry.prevSelfDestructed
-			s.getAccount(entry.addr).Balance = entry.prevBalance
-		case 5: // Vùng lưu trữ tạm.
+			restoreBoolMap(s.dirtyCode, entry.addr, entry.prevDirtyCode)
+			restoreBoolMap(s.dirtyAccounts, entry.addr, entry.prevDirtyAcc)
+			restoreBoolMap(s.txTouched, entry.addr, entry.prevTouched)
+		case journalSelfDestruct:
+			restoreBoolMap(s.selfDestructed, entry.addr, entry.prevSelfDestructed)
+			if acc := s.state[entry.addr]; acc != nil {
+				acc.Balance = entry.prevBalance
+			}
+			restoreBoolMap(s.dirtyAccounts, entry.addr, entry.prevDirtyAcc)
+			restoreBoolMap(s.txTouched, entry.addr, entry.prevTouched)
+		case journalTransient:
 			if s.transientStorage[entry.addr] == nil {
 				s.transientStorage[entry.addr] = make(map[common.Hash]common.Hash)
 			}
 			s.transientStorage[entry.addr][entry.key] = entry.prevTransientVal
+		case journalAccountCreate:
+			if entry.prevExisted && entry.prevAccount != nil {
+				s.state[entry.addr] = entry.prevAccount
+			} else {
+				delete(s.state, entry.addr)
+			}
+			restoreBoolMap(s.missingAccounts, entry.addr, entry.prevMissing)
+			restoreBoolMap(s.deletedAccounts, entry.addr, entry.prevDeleted)
+			restoreBoolMap(s.dirtyAccounts, entry.addr, entry.prevDirtyAcc)
+			restoreBoolMap(s.txTouched, entry.addr, entry.prevTouched)
+		case journalTouch:
+			restoreBoolMap(s.txTouched, entry.addr, entry.prevTouched)
+		case journalAccessListAddr:
+			delete(s.accessList.addresses, entry.addr)
+			delete(s.accessList.slots, entry.addr)
+		case journalAccessListSlot:
+			if slots := s.accessList.slots[entry.addr]; slots != nil {
+				delete(slots, entry.key)
+				if len(slots) == 0 {
+					delete(s.accessList.slots, entry.addr)
+				}
+			}
+		case journalNewContract:
+			restoreBoolMap(s.newContracts, entry.addr, entry.prevNewContract)
 		}
 	}
 
-	// Cắt ngắn nhật ký và danh sách ảnh chụp.
 	s.journal = s.journal[:snap.journalLen]
 	s.snapshots = s.snapshots[:idx]
 	s.refund = snap.refund
 	s.logs = s.logs[:snap.logsLen]
+}
+
+func restoreBoolMap(m map[common.Address]bool, addr common.Address, val bool) {
+	if val {
+		m[addr] = true
+	} else {
+		delete(m, addr)
+	}
 }
 
 // --- Nhật ký ---
@@ -735,7 +1223,6 @@ func (s *PebbleStateDB) AddPreimage(hash common.Hash, preimage []byte) {
 }
 
 func (s *PebbleStateDB) ForEachStorage(addr common.Address, cb func(common.Hash, common.Hash) bool) error {
-	// Duyệt vùng lưu trữ trong bộ đệm.
 	if slots, ok := s.storage[addr]; ok {
 		for key, val := range slots {
 			if !cb(key, val) {
@@ -760,11 +1247,55 @@ func (s *PebbleStateDB) PointCache() *utils.PointCache {
 
 func (s *PebbleStateDB) Finalise(deleteEmptyObjects bool) {
 	// Xóa các tài khoản đã tự hủy.
-	for addr := range s.selfDestructed {
-		if s.selfDestructed[addr] {
-			delete(s.storage, addr)
+	for addr, destructed := range s.selfDestructed {
+		if !destructed {
+			continue
+		}
+		delete(s.state, addr)
+		delete(s.storage, addr)
+		delete(s.dirtyStorage, addr)
+		delete(s.frozenStorage, addr)
+		delete(s.code, addr)
+		delete(s.dirtyCode, addr)
+		s.storageCleared[addr] = true
+		if s.existedInBase(addr) {
+			s.deletedAccounts[addr] = true
+			s.dirtyAccounts[addr] = true
+		} else {
+			delete(s.deletedAccounts, addr)
+			delete(s.dirtyAccounts, addr)
+			s.missingAccounts[addr] = true
+		}
+	}
+
+	// EIP-161 (Shanghai): xóa mọi tài khoản rỗng đã được chạm/tạo/sửa trong giao dịch
+	if deleteEmptyObjects {
+		for addr := range s.txTouched {
+			if s.deletedAccounts[addr] {
+				continue
+			}
+			acc, ok := s.state[addr]
+			if !ok {
+				continue
+			}
+			if !isEmptyAccount(acc) {
+				continue
+			}
+			delete(s.state, addr)
 			delete(s.code, addr)
-			s.markDirty(addr)
+			delete(s.dirtyCode, addr)
+			delete(s.storage, addr)
+			delete(s.dirtyStorage, addr)
+			delete(s.frozenStorage, addr)
+			s.storageCleared[addr] = true
+			if s.existedInBase(addr) {
+				s.deletedAccounts[addr] = true
+				s.dirtyAccounts[addr] = true
+			} else {
+				delete(s.deletedAccounts, addr)
+				delete(s.dirtyAccounts, addr)
+				s.missingAccounts[addr] = true
+			}
 		}
 	}
 
@@ -773,6 +1304,8 @@ func (s *PebbleStateDB) Finalise(deleteEmptyObjects bool) {
 	s.originStorage = make(map[common.Address]map[common.Hash]common.Hash)
 	s.transientStorage = make(map[common.Address]map[common.Hash]common.Hash)
 	s.selfDestructed = make(map[common.Address]bool)
+	s.newContracts = make(map[common.Address]bool)
+	s.txTouched = make(map[common.Address]bool)
 	s.journal = s.journal[:0]
 	s.snapshots = s.snapshots[:0]
 	s.refund = 0
@@ -780,12 +1313,15 @@ func (s *PebbleStateDB) Finalise(deleteEmptyObjects bool) {
 
 // Commit ghi toàn bộ trạng thái đã thay đổi xuống PebbleDB.
 func (s *PebbleStateDB) Commit() error {
-	batch := s.db.NewBatch()
-	defer batch.Close()
+	if err := s.Err(); err != nil {
+		return fmt.Errorf("state db read error before commit: %w", err)
+	}
 	writes, err := s.PendingWrites()
 	if err != nil {
 		return err
 	}
+	batch := s.db.NewBatch()
+	defer batch.Close()
 	keys := make([]string, 0, len(writes))
 	for key := range writes {
 		keys = append(keys, key)
@@ -808,14 +1344,11 @@ func (s *PebbleStateDB) Commit() error {
 
 // StateReader cung cấp góc nhìn ổn định, chỉ đọc cho các bộ thực thi.
 func (s *PebbleStateDB) Account(addr common.Address) (*Account, bool) {
-	acc := s.getAccount(addr)
-	if acc == nil {
-		return nil, false
+	acc, ok := s.loadAccount(addr)
+	if !ok || acc == nil {
+		return &Account{Balance: new(big.Int)}, false
 	}
-	clone := *acc
-	clone.Balance = new(big.Int).Set(acc.Balance)
-	clone.CodeHash = append([]byte(nil), acc.CodeHash...)
-	return &clone, s.Exist(addr)
+	return cloneAccount(acc), true
 }
 
 func (s *PebbleStateDB) Storage(addr common.Address, key common.Hash) common.Hash {
@@ -829,8 +1362,84 @@ func (s *PebbleStateDB) Code(addr common.Address) []byte {
 // Giá trị nil biểu thị thao tác xóa. Nhờ đó các bộ thực thi khác dùng chung
 // ranh giới lưu trữ mà không cần truy cập chi tiết bên trong PebbleStateDB.
 func (s *PebbleStateDB) PendingWrites() (map[string][]byte, error) {
+	if err := s.Err(); err != nil {
+		return nil, fmt.Errorf("state db read error: %w", err)
+	}
 	writes := make(map[string][]byte)
+	// emit tombstone cho code/storage cũ của account bị SELFDESTRUCT rồi tái tạo cùng block (tránh hồi sinh ở block H+1)
+	for addr, cleared := range s.storageCleared {
+		if !cleared || s.deletedAccounts[addr] {
+			continue
+		}
+		hasBaseCode := false
+		if s.overlayBase != nil {
+			c, err := s.overlayBase.codeSnapshot(addr)
+			if err != nil {
+				return nil, fmt.Errorf("code snapshot for cleared account %s: %w", addr.Hex(), err)
+			}
+			hasBaseCode = len(c) > 0
+		} else if s.kv != nil {
+			has, err := s.kv.Has(codeKey(addr))
+			if err != nil {
+				return nil, fmt.Errorf("has code for cleared account %s: %w", addr.Hex(), err)
+			}
+			hasBaseCode = has
+		}
+		if hasBaseCode {
+			writes[string(codeKey(addr))] = nil
+		}
+		if s.overlayBase != nil {
+			for cur := s.overlayBase; cur != nil; cur = cur.overlayBase {
+				for slot := range cur.storage[addr] {
+					writes[string(storageKey(addr, slot))] = nil
+				}
+			}
+		}
+		if s.kv != nil {
+			prefix := storagePrefix(addr)
+			iter, err := s.kv.Iterator(prefix, prefixUpperBound(prefix))
+			if err != nil {
+				return nil, fmt.Errorf("iter storage for cleared account %s: %w", addr.Hex(), err)
+			}
+			for ; iter.Valid(); iter.Next() {
+				writes[string(iter.Key())] = nil
+			}
+			iterErr := iter.Error()
+			_ = iter.Close()
+			if iterErr != nil {
+				return nil, fmt.Errorf("iter storage error for cleared account %s: %w", addr.Hex(), iterErr)
+			}
+		}
+	}
 	for addr := range s.dirtyAccounts {
+		if s.deletedAccounts[addr] {
+			writes[string(append([]byte("acc-"), addr.Bytes()...))] = nil
+			writes[string(codeKey(addr))] = nil
+			// xóa sạch mọi slot storage cũ của tài khoản bị xóa để không còn khóa mồ côi trong Pebble
+			if s.overlayBase != nil {
+				for cur := s.overlayBase; cur != nil; cur = cur.overlayBase {
+					for slot := range cur.storage[addr] {
+						writes[string(storageKey(addr, slot))] = nil
+					}
+				}
+			}
+			if s.kv != nil {
+				prefix := storagePrefix(addr)
+				iter, err := s.kv.Iterator(prefix, prefixUpperBound(prefix))
+				if err != nil {
+					return nil, fmt.Errorf("iter storage for deleted account %s: %w", addr.Hex(), err)
+				}
+				for ; iter.Valid(); iter.Next() {
+					writes[string(iter.Key())] = nil
+				}
+				iterErr := iter.Error()
+				_ = iter.Close()
+				if iterErr != nil {
+					return nil, fmt.Errorf("iter storage error for deleted account %s: %w", addr.Hex(), iterErr)
+				}
+			}
+			continue
+		}
 		acc := s.state[addr]
 		if acc == nil {
 			continue
@@ -842,9 +1451,19 @@ func (s *PebbleStateDB) PendingWrites() (map[string][]byte, error) {
 		writes[string(append([]byte("acc-"), addr.Bytes()...))] = value
 	}
 	for addr := range s.dirtyCode {
-		writes[string(codeKey(addr))] = append([]byte(nil), s.code[addr]...)
+		if s.deletedAccounts[addr] {
+			continue
+		}
+		if len(s.code[addr]) == 0 {
+			writes[string(codeKey(addr))] = nil
+		} else {
+			writes[string(codeKey(addr))] = append([]byte(nil), s.code[addr]...)
+		}
 	}
 	for addr, slots := range s.dirtyStorage {
+		if s.deletedAccounts[addr] {
+			continue
+		}
 		for key := range slots {
 			value := s.storage[addr][key]
 			if value == (common.Hash{}) {
@@ -868,6 +1487,12 @@ func (s *PebbleStateDB) ComputeAppHash(previousRoot ...[]byte) []byte {
 	keys := make([]string, 0, len(s.dirtyAccounts)+len(s.dirtyCode))
 	values := make(map[string][]byte)
 	for addr := range s.dirtyAccounts {
+		if s.deletedAccounts[addr] {
+			k := "account:" + string(addr.Bytes())
+			keys = append(keys, k)
+			// giá trị thiếu (nil) biểu thị thao tác xóa tài khoản
+			continue
+		}
 		if acc := s.state[addr]; acc != nil {
 			encoded, err := rlp.EncodeToBytes(acc)
 			if err != nil {
@@ -879,6 +1504,9 @@ func (s *PebbleStateDB) ComputeAppHash(previousRoot ...[]byte) []byte {
 		}
 	}
 	for addr, slots := range s.dirtyStorage {
+		if s.deletedAccounts[addr] {
+			continue
+		}
 		for key := range slots {
 			k := "storage:" + string(addr.Bytes()) + string(key.Bytes())
 			keys = append(keys, k)
@@ -889,6 +1517,9 @@ func (s *PebbleStateDB) ComputeAppHash(previousRoot ...[]byte) []byte {
 		}
 	}
 	for addr := range s.dirtyCode {
+		if s.deletedAccounts[addr] {
+			continue
+		}
 		k := "code:" + string(addr.Bytes())
 		keys = append(keys, k)
 		if code := s.code[addr]; len(code) > 0 {
@@ -918,9 +1549,9 @@ func writeRootField(h interface{ Write([]byte) (int, error) }, field []byte) {
 	_, _ = h.Write(field)
 }
 
-// AddBalance thêm số dư khởi tạo ở khối khởi nguyên.
+// AddBalanceBig thêm số dư khởi tạo ở khối khởi nguyên.
 func (s *PebbleStateDB) AddBalanceBig(addr common.Address, amount *big.Int) {
-	acc := s.getAccount(addr)
+	acc := s.getOrCreateAccount(addr)
 	acc.Balance.Add(acc.Balance, amount)
 	s.markDirty(addr)
 }
@@ -932,7 +1563,7 @@ func (s *PebbleStateDB) ApplyEOATransfer(from, to, coinbase common.Address, nonc
 	if value == nil {
 		return fmt.Errorf("EOA transfer has nil value")
 	}
-	sender := s.getAccount(from)
+	sender := s.getOrCreateAccount(from)
 	if sender.Nonce != nonce {
 		return fmt.Errorf("EOA transfer nonce changed: state %d, tx %d", sender.Nonce, nonce)
 	}
@@ -940,17 +1571,26 @@ func (s *PebbleStateDB) ApplyEOATransfer(from, to, coinbase common.Address, nonc
 	if sender.Balance.Cmp(amount) < 0 {
 		return fmt.Errorf("EOA transfer balance changed")
 	}
-	if from != to {
+	if from != to && amount.Sign() > 0 {
 		sender.Balance.Sub(sender.Balance, amount)
-		receiver := s.getAccount(to)
+		receiver := s.getOrCreateAccount(to)
 		receiver.Balance.Add(receiver.Balance, amount)
 		s.markDirty(to)
 	}
 	sender.Nonce++
 	s.markDirty(from)
-	// Dù giao dịch không mất phí, bước chuyển trạng thái của geth vẫn gọi hàm
-	// cộng thưởng số dư cho Coinbase, khiến tài khoản đó được đánh dấu cần ghi.
-	_ = s.getAccount(coinbase)
-	s.markDirty(coinbase)
+	// khớp EIP-161 khi tip=0: nếu coinbase tồn tại nhưng rỗng -> xóa; nếu không tồn tại hoặc không rỗng -> giữ nguyên
+	if cbAcc, ok := s.loadAccount(coinbase); ok && isEmptyAccount(cbAcc) {
+		delete(s.state, coinbase)
+		delete(s.code, coinbase)
+		delete(s.dirtyCode, coinbase)
+		if s.existedInBase(coinbase) {
+			s.deletedAccounts[coinbase] = true
+			s.dirtyAccounts[coinbase] = true
+		} else {
+			delete(s.dirtyAccounts, coinbase)
+			s.missingAccounts[coinbase] = true
+		}
+	}
 	return nil
 }

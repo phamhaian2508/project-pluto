@@ -1,0 +1,58 @@
+{
+  "blockSchedule": [
+    {
+      "dir": "blocks/block-01",
+      "expectedStatus": [
+        1,
+        1
+      ],
+      "expectedWord0": 384,
+      "gasUsed": 105200,
+      "height": 1,
+      "mode": "late",
+      "txCount": 2
+    }
+  ],
+  "blocks": [
+    "blocks/block-01"
+  ],
+  "caseId": "merkle-2tx-late",
+  "chainId": 1337,
+  "claimedBitMapSlot": 0,
+  "claimedEventTopic": "0x6aa3eac93d079e5e100b1029be716caa33586c96aa4baac390669fb5c2a21212",
+  "coinbase": "0x000000000000000000000000000000000000cafE",
+  "contractAddress": "0x000000000000000000000000000000000000d001",
+  "evmVersion": "shanghai",
+  "feeConfig": {
+    "baseFeeWei": 1,
+    "blockGasLimit": 100000000,
+    "feeCapWei": 1,
+    "tipWei": 0,
+    "txGasLimit": 1000000
+  },
+  "fork": "Shanghai",
+  "inputSha256": {
+    "abi.json": "0x92d0fd3871a1d022edef35a8ba30d9d7a3e887d21232f89a7483e6865b5988ec",
+    "alloc.json": "0x69cd5717cfb65736bad45eeb67b31352e6e0093d666d62683ca3f697b46622d1",
+    "blocks/block-01/env.json": "0xd34346aedda61f86afa72d6b373ad33c37921201a10360caa3fa77824c44bf78",
+    "blocks/block-01/reference-result.json": "0x927820bcc9c587ffb42897fe448c43a13191b9c766ba3a4d0cad63347016376a",
+    "blocks/block-01/txs.json": "0x087fce1b1f5431ff6c2943edf36f749556a1940f4e4fcce1864957c69a0d51dd",
+    "proofs.json": "0x33584bc1d9b0c1ef9099cd91ec80367f0ff88dc279c5a6554e86c09f50638ae9",
+    "storage-layout.json": "0xa36c2ffbedce19e65cb26b08fcbf1da045e8c1345ea0f1a99881835a29822ebf"
+  },
+  "leafCount": 16384,
+  "merkleRoot": "0x6050dc6a0db5ff20ee8ab24b6a3cc74e8e3f6a21cec121cd2e90dc5d9a0d6825",
+  "metadataBytecodeHash": "none",
+  "optimizerEnabled": false,
+  "prng": "splitmix64",
+  "runtimeCodeHash": "0x87ef413dbc5ec0d32c8d5008b963562ed8c295df8b6ee738a3537362be891826",
+  "selectors": {
+    "claimEarly": "0x21252a06",
+    "claimLate": "0xde2afb9c"
+  },
+  "solcFullVersion": "0.8.24+commit.e11b9ed9.Linux.g++",
+  "solidityVersion": "0.8.24",
+  "treeDepth": 14,
+  "txOrdering": "fixed-index-7-and-8",
+  "walletCount": 64
+}

@@ -16,42 +16,73 @@ import (
 type CheckpointPolicy uint8
 
 const (
-	CheckpointPolicyP0 CheckpointPolicy = iota // không tạo checkpoint
-	CheckpointPolicyP1                         // trước mỗi lần đọc trạng thái
-	CheckpointPolicyP2                         // sau mỗi chu kỳ opcode đã cấu hình
-	CheckpointPolicyP3                         // trước khi đọc khóa thường gây xung đột
+	CheckpointPolicyP0 CheckpointPolicy = iota // không tạo checkpoint (off)
+	CheckpointPolicyP1                         // trước mỗi lần đọc trạng thái (legacy)
+	CheckpointPolicyP2                         // sau mỗi chu kỳ opcode đã cấu hình (fixed)
+	CheckpointPolicyP3                         // trước khi đọc/ghi khóa từng xung đột (history)
+	CheckpointPolicyP4                         // chọn lọc ứng viên nóng theo lợi ích dự báo (adaptive)
+
+	// Bí danh chuẩn Phase 2–3 khớp tài liệu migration-to-project-pluto.md
+	CheckpointPolicyOff      = CheckpointPolicyP0
+	CheckpointPolicyFixed    = CheckpointPolicyP2
+	CheckpointPolicyHistory  = CheckpointPolicyP3
+	CheckpointPolicyAdaptive = CheckpointPolicyP4
 )
 
-// CheckpointConfig cấu hình cách chọn checkpoint có tính tất định. Chỉ P2 cần
-// Interval; giá trị này cho biết số opcode thực thi giữa hai checkpoint.
+// CheckpointConfig cấu hình cách chọn checkpoint có tính tất định và ngân sách RAM.
+// Với đường Phase 2–3 (SlidingWindow / predicted-occ), BudgetBytes áp trần cứng M byte (UseBudget=true, M=0 hành xử như off).
 type CheckpointConfig struct {
-	Policy   CheckpointPolicy
-	Interval uint64
+	Policy             CheckpointPolicy
+	Interval           uint64
+	BudgetBytes        uint64
+	UseBudget          bool
+	AdaptiveModel      *AdaptiveModel
+	DisableOffObserver bool // true -> khi policy=off tắt hoàn toàn tracer/quan sát chỉ phục vụ checkpoint
+	HistoryMaxPerTx    int  // >0 -> giới hạn số điểm chụp mỗi tx cho history (dùng khi đối chứng công bằng 1 điểm/tx)
 }
 
 func DefaultCheckpointConfig() CheckpointConfig {
 	return CheckpointConfig{Policy: CheckpointPolicyP0}
 }
 
-// ParseCheckpointPolicy converts the stable command-line names P0-P3 into the
-// corresponding deterministic checkpoint policy.
+// Phase2Name trả tên chính sách chuẩn Phase 2–3 (off / fixed / history / adaptive).
+func (p CheckpointPolicy) Phase2Name() string {
+	switch p {
+	case CheckpointPolicyP0:
+		return "off"
+	case CheckpointPolicyP1:
+		return "p1"
+	case CheckpointPolicyP2:
+		return "fixed"
+	case CheckpointPolicyP3:
+		return "history"
+	case CheckpointPolicyP4:
+		return "adaptive"
+	default:
+		return fmt.Sprintf("unknown-%d", p)
+	}
+}
+
+// ParseCheckpointPolicy nhận cả tên cũ (P0-P4) lẫn tên chuẩn Phase 2–3 (off/fixed/history/adaptive).
 func ParseCheckpointPolicy(value string) (CheckpointPolicy, error) {
 	switch strings.ToUpper(strings.TrimSpace(value)) {
-	case "P0":
+	case "P0", "OFF":
 		return CheckpointPolicyP0, nil
 	case "P1":
 		return CheckpointPolicyP1, nil
-	case "P2":
+	case "P2", "FIXED":
 		return CheckpointPolicyP2, nil
-	case "P3":
+	case "P3", "HISTORY":
 		return CheckpointPolicyP3, nil
+	case "P4", "ADAPTIVE":
+		return CheckpointPolicyP4, nil
 	default:
-		return CheckpointPolicyP0, fmt.Errorf("unknown checkpoint policy %q (want p0, p1, p2 or p3)", value)
+		return CheckpointPolicyP0, fmt.Errorf("unknown checkpoint policy %q (want off, fixed, history, adaptive, p0, p1, p2, p3 or p4)", value)
 	}
 }
 
 func (c CheckpointConfig) Validate() error {
-	if c.Policy > CheckpointPolicyP3 {
+	if c.Policy > CheckpointPolicyP4 {
 		return errors.New("unknown checkpoint policy")
 	}
 	if c.Policy == CheckpointPolicyP2 && c.Interval == 0 {
@@ -293,6 +324,7 @@ func cloneInterpreterState(src InterpreterState) InterpreterState {
 
 func cloneStateForCheckpoint(src *PebbleStateDB) *PebbleStateDB {
 	dst := NewPebbleStateDB(src.db)
+	dst.kv = src.kv
 	dst.overlayBase = src.overlayBase
 	for addr, account := range src.state {
 		if account == nil {
@@ -306,6 +338,9 @@ func cloneStateForCheckpoint(src *PebbleStateDB) *PebbleStateDB {
 		clone.CodeHash = append([]byte(nil), account.CodeHash...)
 		dst.state[addr] = &clone
 	}
+	dst.missingAccounts = cloneAddressBoolMap(src.missingAccounts)
+	dst.deletedAccounts = cloneAddressBoolMap(src.deletedAccounts)
+	dst.storageCleared = cloneAddressBoolMap(src.storageCleared)
 	for addr, code := range src.code {
 		dst.code[addr] = append([]byte(nil), code...)
 	}
@@ -313,6 +348,8 @@ func cloneStateForCheckpoint(src *PebbleStateDB) *PebbleStateDB {
 	dst.storage = cloneAddressStorage(src.storage)
 	dst.dirtyStorage = cloneAddressBoolStorage(src.dirtyStorage)
 	dst.selfDestructed = cloneAddressBoolMap(src.selfDestructed)
+	dst.newContracts = cloneAddressBoolMap(src.newContracts)
+	dst.txTouched = cloneAddressBoolMap(src.txTouched)
 	dst.transientStorage = cloneAddressStorage(src.transientStorage)
 	dst.refund = src.refund
 	dst.logs = cloneLogs(src.logs)
@@ -331,6 +368,9 @@ func cloneJournal(src []journalEntry) []journalEntry {
 		dst[i] = entry
 		if entry.prevBalance != nil {
 			dst[i].prevBalance = new(big.Int).Set(entry.prevBalance)
+		}
+		if entry.prevAccount != nil {
+			dst[i].prevAccount = cloneAccount(entry.prevAccount)
 		}
 		dst[i].prevCode = append([]byte(nil), entry.prevCode...)
 		dst[i].prevCodeHash = append([]byte(nil), entry.prevCodeHash...)

@@ -100,7 +100,56 @@ type MVVersionSnapshot struct {
 
 // MVMemory là bảng lưu các phiên bản đã chấp nhận. Bảng được chia thành nhiều
 // phần để việc xác thực song song và cập nhật theo thứ tự không tranh một khóa chung.
-type MVMemory struct{ shards [32]versionShard }
+type MVMemory struct {
+	shards     [32]versionShard
+	genMu      sync.RWMutex
+	generation uint64
+}
+
+func (k MVKey) String() string {
+	switch k.Kind {
+	case MVBalance:
+		return fmt.Sprintf("balance(%s)", k.Address.Hex())
+	case MVNonce:
+		return fmt.Sprintf("nonce(%s)", k.Address.Hex())
+	case MVCode:
+		return fmt.Sprintf("code(%s)", k.Address.Hex())
+	case MVStorage:
+		return fmt.Sprintf("storage(%s,%s)", k.Address.Hex(), k.Slot.Hex())
+	case MVStorageRoot:
+		return fmt.Sprintf("storageRoot(%s)", k.Address.Hex())
+	default:
+		return fmt.Sprintf("account(%s)", k.Address.Hex())
+	}
+}
+
+func (m *MVMemory) Generation() uint64 {
+	m.genMu.RLock()
+	g := m.generation
+	m.genMu.RUnlock()
+	return g
+}
+
+func (m *MVMemory) BumpGeneration() uint64 {
+	m.genMu.Lock()
+	m.generation++
+	g := m.generation
+	m.genMu.Unlock()
+	return g
+}
+
+func (m *MVMemory) CloneVersions() map[MVKey]uint64 {
+	out := make(map[MVKey]uint64)
+	for i := range m.shards {
+		shard := &m.shards[i]
+		shard.RLock()
+		for k, v := range shard.versions {
+			out[k] = v
+		}
+		shard.RUnlock()
+	}
+	return out
+}
 
 func NewMVMemory() *MVMemory {
 	m := &MVMemory{}
@@ -217,12 +266,15 @@ func (m *MVMemory) Commit(writes []MVKey) {
 // phân giải có thứ tự chấp nhận tập ghi.
 type TxState struct {
 	*PebbleStateDB
-	TxIndex     int
-	Incarnation uint64
-	ReadSet     []MVKey
-	WriteSet    []MVKey
-	reads       map[MVKey]struct{}
-	writes      map[MVKey]struct{}
+	TxIndex       int
+	Incarnation   uint64
+	ReadSet       []MVKey
+	WriteSet      []MVKey
+	reads         map[MVKey]struct{}
+	writes        map[MVKey]struct{}
+	currentStep   int64
+	readSteps     map[MVKey]int64
+	onStorageRead func(addr common.Address, slot, val common.Hash)
 }
 
 var _ vm.StateDB = (*TxState)(nil)
@@ -234,6 +286,8 @@ func newTxState(base *PebbleStateDB, txIndex int, incarnation uint64, readSet, w
 		Incarnation:   incarnation,
 		reads:         make(map[MVKey]struct{}, len(readSet)+8),
 		writes:        make(map[MVKey]struct{}, len(writeSet)+8),
+		currentStep:   -1,
+		readSteps:     make(map[MVKey]int64, len(readSet)+8),
 	}
 	for _, key := range readSet {
 		txState.addReadKey(key)
@@ -244,12 +298,31 @@ func newTxState(base *PebbleStateDB, txIndex int, incarnation uint64, readSet, w
 	return txState
 }
 
+func (s *TxState) SetCurrentStep(step int64) {
+	if s != nil {
+		s.currentStep = step
+	}
+}
+
+func (s *TxState) ReadStep(key MVKey) int64 {
+	if s == nil {
+		return -1
+	}
+	if step, ok := s.readSteps[key]; ok {
+		return step
+	}
+	return -1
+}
+
 func (s *TxState) addReadKey(key MVKey) {
 	if _, exists := s.reads[key]; exists {
 		return
 	}
 	s.reads[key] = struct{}{}
 	s.ReadSet = append(s.ReadSet, key)
+	if s.readSteps != nil {
+		s.readSteps[key] = s.currentStep
+	}
 }
 
 func (s *TxState) addWriteKey(key MVKey) {
@@ -308,9 +381,10 @@ func stateVersionedWrites(state *PebbleStateDB, keys []MVKey) map[MVKey][]byte {
 				values[key] = nil
 			}
 		case MVAccount:
-			account := state.getAccount(key.Address)
-			encoded, err := rlp.EncodeToBytes(account)
-			if err == nil {
+			account, ok := state.loadAccount(key.Address)
+			if !ok {
+				values[key] = nil
+			} else if encoded, err := rlp.EncodeToBytes(account); err == nil {
 				values[key] = encoded
 			}
 		case MVStorageRoot:
@@ -344,6 +418,12 @@ func (s *TxState) SubBalance(addr common.Address, amount *uint256.Int, reason tr
 
 func (s *TxState) AddBalance(addr common.Address, amount *uint256.Int, reason tracing.BalanceChangeReason) uint256.Int {
 	if amount != nil && amount.IsZero() {
+		s.recordRead(MVKey{Address: addr, Kind: MVAccount})
+		// chỉ ghi MVAccount khi account thực sự tồn tại và rỗng (EIP-161 sẽ xóa ở Finalise);
+		// account chưa tồn tại là no-op, tránh tạo xung đột giả trên Coinbase chưa cấp tiền
+		if s.PebbleStateDB.Exist(addr) && s.PebbleStateDB.Empty(addr) {
+			s.recordWrite(MVKey{Address: addr, Kind: MVAccount})
+		}
 		return s.PebbleStateDB.AddBalance(addr, amount, reason)
 	}
 	s.recordRead(MVKey{Address: addr, Kind: MVBalance})
@@ -388,15 +468,24 @@ func (s *TxState) SetCode(addr common.Address, code []byte, reason tracing.CodeC
 
 func (s *TxState) GetStateAndCommittedState(addr common.Address, slot common.Hash) (common.Hash, common.Hash) {
 	s.recordRead(MVKey{Address: addr, Kind: MVStorage, Slot: slot})
-	return s.PebbleStateDB.GetStateAndCommittedState(addr, slot)
+	val, orig := s.PebbleStateDB.GetStateAndCommittedState(addr, slot)
+	if s.onStorageRead != nil {
+		s.onStorageRead(addr, slot, val)
+	}
+	return val, orig
 }
 
 func (s *TxState) GetState(addr common.Address, slot common.Hash) common.Hash {
 	s.recordRead(MVKey{Address: addr, Kind: MVStorage, Slot: slot})
-	return s.PebbleStateDB.GetState(addr, slot)
+	val := s.PebbleStateDB.GetState(addr, slot)
+	if s.onStorageRead != nil {
+		s.onStorageRead(addr, slot, val)
+	}
+	return val
 }
 
 func (s *TxState) SetState(addr common.Address, slot, value common.Hash) common.Hash {
+	s.recordRead(MVKey{Address: addr, Kind: MVStorage, Slot: slot})
 	s.recordWrite(MVKey{Address: addr, Kind: MVStorage, Slot: slot})
 	return s.PebbleStateDB.SetState(addr, slot, value)
 }
@@ -439,7 +528,14 @@ type ParallelExecutor struct {
 	ChainID         *big.Int
 	Workers         int
 	AutoWorkers     bool
+	SlidingWindow   bool // true -> cửa sổ trượt W kiểu Phase 1 (W=1 không retry)
+	StrictInvalidTx bool // true -> trả *TxRejectedError và hủy block khi có tx không hợp lệ
+	Phase2Mode      bool // true -> bật thống kê Phase 2–3 đầy đủ cho off/fixed/history/adaptive
+	RecordTrace     bool
+	OCCHooks        *OCCHooks
 	Checkpoints     CheckpointConfig
+	HistoryTracker  *CheckpointHistoryTracker
+	AdaptiveTracker *AdaptiveHistoryTracker
 	workerMu        sync.Mutex
 	adaptiveWorkers int
 }
@@ -449,8 +545,33 @@ func NewParallelExecutor(config *params.ChainConfig, chainID *big.Int, workers i
 		workers = runtime.GOMAXPROCS(0)
 	}
 	return &ParallelExecutor{
-		ChainConfig: config, ChainID: new(big.Int).Set(chainID), Workers: workers,
-		Checkpoints: DefaultCheckpointConfig(),
+		ChainConfig:     config,
+		ChainID:         new(big.Int).Set(chainID),
+		Workers:         workers,
+		Checkpoints:     DefaultCheckpointConfig(),
+		HistoryTracker:  NewCheckpointHistoryTracker(MaxHistoryHotSlots),
+		AdaptiveTracker: NewAdaptiveHistoryTracker(),
+	}
+}
+
+// HotSlots trả danh sách khóa nóng (contract, slot) học được cho chính sách history/adaptive.
+func (e *ParallelExecutor) HotSlots() []MVKey {
+	if e == nil || e.HistoryTracker == nil {
+		return nil
+	}
+	return e.HistoryTracker.HotSlots()
+}
+
+// ResetCheckpointHistory xóa lịch sử xung đột và thống kê adaptive xuyên block để bắt đầu lượt chạy mới độc lập.
+func (e *ParallelExecutor) ResetCheckpointHistory() {
+	if e == nil {
+		return
+	}
+	if e.HistoryTracker != nil {
+		e.HistoryTracker.Reset()
+	}
+	if e.AdaptiveTracker != nil {
+		e.AdaptiveTracker.Reset()
 	}
 }
 
@@ -489,7 +610,19 @@ func (e *ParallelExecutor) ConfigureCheckpoints(config CheckpointConfig) error {
 	if err := config.Validate(); err != nil {
 		return err
 	}
+	if config.Policy == CheckpointPolicyAdaptive && config.AdaptiveModel == nil {
+		return fmt.Errorf("checkpoint policy adaptive requires AdaptiveModel")
+	}
 	e.Checkpoints = config
+	if config.UseBudget || config.Policy == CheckpointPolicyAdaptive {
+		e.Phase2Mode = true
+		if e.HistoryTracker == nil {
+			e.HistoryTracker = NewCheckpointHistoryTracker(MaxHistoryHotSlots)
+		}
+		if e.AdaptiveTracker == nil {
+			e.AdaptiveTracker = NewAdaptiveHistoryTracker()
+		}
+	}
 	return nil
 }
 
@@ -792,7 +925,13 @@ func (e *ParallelExecutor) staticTransferAccess(base StateReader, tx *types.Tran
 	signer := types.LatestSignerForChainID(e.ChainID)
 	sender, err := types.Sender(signer, tx)
 	stateDB, ok := base.(*PebbleStateDB)
-	if err != nil || !ok || len(stateDB.getAccount(sender).CodeHash) != 0 || len(stateDB.getAccount(*tx.To()).CodeHash) != 0 || isPrecompileAddress(*tx.To()) {
+	if err != nil || !ok || isPrecompileAddress(*tx.To()) {
+		return staticTransfer{}, false
+	}
+	if acc, exists := stateDB.loadAccount(sender); exists && len(acc.CodeHash) != 0 {
+		return staticTransfer{}, false
+	}
+	if acc, exists := stateDB.loadAccount(*tx.To()); exists && len(acc.CodeHash) != 0 {
 		return staticTransfer{}, false
 	}
 	access := staticTransfer{sender: sender, recipient: *tx.To()}

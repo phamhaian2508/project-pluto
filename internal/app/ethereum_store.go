@@ -147,7 +147,7 @@ func (app *App) stageEthereumBlock(
 		cumulativeGas += result.GasUsed
 		block.GasUsed += result.GasUsed
 
-		from, _ := app.txProcessor.RecoverSender(transaction)
+		from, _ := app.getTxProcessor().RecoverSender(transaction)
 		var to *common.Address
 		if destination := transaction.To(); destination != nil {
 			copy := *destination
@@ -225,8 +225,11 @@ func (app *App) stageEthereumBlock(
 	return nil
 }
 
-func (app *App) loadJSON(key []byte, target any) (bool, error) {
-	encoded, err := app.db.Get(key)
+func loadJSONFromKV(kv evm.ReadOnlyKV, key []byte, target any) (bool, error) {
+	if kv == nil {
+		return false, nil
+	}
+	encoded, err := kv.Get(key)
 	if err != nil || len(encoded) == 0 {
 		return false, err
 	}
@@ -236,10 +239,18 @@ func (app *App) loadJSON(key []byte, target any) (bool, error) {
 	return true, nil
 }
 
-func (app *App) EthereumBlockByNumber(number uint64) (*EthereumBlock, bool, error) {
+func (app *App) loadJSON(key []byte, target any) (bool, error) {
+	return loadJSONFromKV(app.db, key, target)
+}
+
+func ethereumBlockByNumberFromKV(kv evm.ReadOnlyKV, number uint64) (*EthereumBlock, bool, error) {
 	var block EthereumBlock
-	found, err := app.loadJSON(ethereumBlockKey(number), &block)
+	found, err := loadJSONFromKV(kv, ethereumBlockKey(number), &block)
 	return &block, found, err
+}
+
+func (app *App) EthereumBlockByNumber(number uint64) (*EthereumBlock, bool, error) {
+	return ethereumBlockByNumberFromKV(app.db, number)
 }
 
 func (app *App) EthereumBlockByHash(hash common.Hash) (*EthereumBlock, bool, error) {

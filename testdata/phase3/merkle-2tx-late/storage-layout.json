@@ -1,0 +1,25 @@
+{
+  "storage": [
+    {
+      "astId": 21,
+      "contract": "MerkleClaim.sol:MerkleClaim",
+      "label": "claimedBitMap",
+      "offset": 0,
+      "slot": "0",
+      "type": "t_array(t_uint256)64_storage"
+    }
+  ],
+  "types": {
+    "t_array(t_uint256)64_storage": {
+      "base": "t_uint256",
+      "encoding": "inplace",
+      "label": "uint256[64]",
+      "numberOfBytes": "2048"
+    },
+    "t_uint256": {
+      "encoding": "inplace",
+      "label": "uint256",
+      "numberOfBytes": "32"
+    }
+  }
+}

@@ -28,15 +28,16 @@ func (app *App) BaseFeePerGasForBlock(height uint64) (*big.Int, error) {
 
 // NextBaseFeePerGas returns the base fee expected for the next block.
 func (app *App) NextBaseFeePerGas() (*big.Int, error) {
-	return app.BaseFeePerGasForBlock(uint64(app.currentHeight + 1))
+	return app.BaseFeePerGasForBlock(app.CurrentHeight() + 1)
 }
 
 // CurrentBaseFeePerGas returns the base fee recorded in the latest committed block.
 func (app *App) CurrentBaseFeePerGas() (*big.Int, error) {
-	if app.currentHeight <= 0 {
+	height := app.CurrentHeight()
+	if height == 0 {
 		return new(big.Int), nil
 	}
-	block, found, err := app.EthereumBlockByNumber(uint64(app.currentHeight))
+	block, found, err := app.EthereumBlockByNumber(height)
 	if err != nil {
 		return nil, err
 	}

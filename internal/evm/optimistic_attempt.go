@@ -41,6 +41,10 @@ type gethAttemptRecoveryRunner struct {
 }
 
 func (r gethAttemptRecoveryRunner) Resume(checkpoint *attemptCheckpoint, incarnation uint64) (*optimisticAttempt, replayWork, error) {
+	// tránh bỏ qua giới hạn gas còn lại của block khi resume
+	if r.tx == nil || r.tx.Gas() > r.gasLimit {
+		return nil, replayWork{}, errResumeUnsupported
+	}
 	meter := new(attemptReplayMeter)
 	return resumeOptimisticAttempt(r.base, r.versions, r.config, r.chainID, r.env, r.tx, r.txIndex, incarnation, checkpoint, meter)
 }
@@ -91,6 +95,9 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 	}
 	if workers < 1 {
 		workers = 1
+	}
+	if e.SlidingWindow {
+		return e.executeSlidingWindowOCC(stateDB, env, txs, workers)
 	}
 	// Giữ đường xử lý chuyển khoản đã được chứng nhận, ít cấp phát cho các khối
 	// chỉ gồm giao dịch S không xung đột. Giao dịch EVM thông thường dùng các lần
@@ -156,6 +163,7 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 	versions := NewMVMemory()
 	hotKeys := make(map[MVKey]struct{})
 	remainingGas := env.GasLimit
+	var blockLogIndex uint
 	analyzeNS, executeNS, validateNS, resolveNS := preAnalyzeNS, int64(0), int64(0), int64(0)
 	var aborts, retries, parallelTxs, staticTxs, opaqueTxs float64
 	var workerStats workerUsage
@@ -179,6 +187,8 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 		}
 		wave := txs[start:end]
 		attempts := make([]*optimisticAttempt, len(wave))
+		attemptErrs := make([]error, len(wave))
+		waveRemainingGas := remainingGas
 		waveHotKeys := cloneMVKeySet(hotKeys)
 		for _, tx := range wave {
 			analyzeStart = time.Now()
@@ -203,11 +213,11 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 			go func() {
 				defer wg.Done()
 				for item := range jobs {
-					attempt, err := executeOptimisticAttemptConfigured(stateDB, versions, e.ChainConfig, e.ChainID, env, wave[item.index], start+item.index, 1, env.GasLimit, e.Checkpoints, waveHotKeys, nil)
+					attempt, err := executeOptimisticAttemptConfigured(stateDB, versions, e.ChainConfig, e.ChainID, env, wave[item.index], start+item.index, 1, waveRemainingGas, e.Checkpoints, waveHotKeys, nil)
 					if err != nil {
-						// Lưu lỗi thành kết quả giao dịch không hợp lệ; bộ phân giải sẽ báo
-						// lỗi theo cách tất định và theo thứ tự giao dịch.
-						attempt = &optimisticAttempt{result: TxResult{Index: start + item.index, Invalid: true, ErrMsg: err.Error()}}
+						// giữ nguyên lỗi hệ thống/DB để bộ phân giải trả lỗi tất định theo thứ tự tx
+						attemptErrs[item.index] = err
+						continue
 					}
 					attempts[item.index] = attempt
 				}
@@ -229,6 +239,9 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 		waveConflicts := 0
 		for i, speculative := range attempts {
 			tx := wave[i]
+			if attemptErrs[i] != nil {
+				return nil, fmt.Errorf("execute speculative transaction %d: %w", start+i, attemptErrs[i])
+			}
 			if speculative == nil {
 				return nil, fmt.Errorf("transaction %d produced no speculative result", start+i)
 			}
@@ -291,8 +304,8 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 			}
 			accepted.status = attemptValidated
 			accepted.result.Index = start + i
-			result.Results[start+i] = accepted.result
 			if accepted.result.Invalid {
+				result.Results[start+i] = accepted.result
 				continue
 			}
 			if accepted.result.GasUsed > remainingGas {
@@ -303,6 +316,8 @@ func (e *ParallelExecutor) ExecuteBlock(base StateReader, env BlockEnv, txs []*t
 				return nil, fmt.Errorf("apply transaction %d delta: %w", start+i, err)
 			}
 			versions.CommitTransaction(start+i, accepted.state.Incarnation, accepted.state.VersionedWrites())
+			blockLogIndex = assignSequentialLogIndices(accepted.result.Logs, blockLogIndex)
+			result.Results[start+i] = accepted.result
 			resolveNS += time.Since(resolveStart).Nanoseconds()
 			remainingGas -= accepted.result.GasUsed
 			result.GasUsed += accepted.result.GasUsed
@@ -449,7 +464,7 @@ func executeOptimisticAttemptConfigured(base *PebbleStateDB, versions *MVMemory,
 	state := newTxState(base, txIndex, incarnation, nil, nil)
 	attempt.state = state
 
-	signer := types.LatestSignerForChainID(chainID)
+	signer := types.MakeSigner(config, big.NewInt(env.Height), env.Time)
 	msg, err := core.TransactionToMessage(tx, signer, new(big.Int).Set(env.BaseFee))
 	if err != nil {
 		attempt.result.Invalid = true
@@ -503,6 +518,9 @@ func executeOptimisticAttemptConfigured(base *PebbleStateDB, versions *MVMemory,
 	snapshot := state.Snapshot()
 	gasPool := new(core.GasPool).AddGas(gasLimit)
 	execution, applyErr := core.ApplyMessage(evmEnv, msg, gasPool)
+	if dbErr := state.Err(); dbErr != nil {
+		return nil, fmt.Errorf("tx %d state db error: %w", txIndex, dbErr)
+	}
 	if capture != nil && capture.err != nil {
 		return nil, capture.err
 	}
@@ -513,16 +531,27 @@ func executeOptimisticAttemptConfigured(base *PebbleStateDB, versions *MVMemory,
 		attempt.result.ErrMsg = applyErr.Error()
 	} else {
 		state.Finalise(true)
+		if dbErr := state.Err(); dbErr != nil {
+			return nil, fmt.Errorf("tx %d state db error after finalise: %w", txIndex, dbErr)
+		}
 		attempt.result.GasUsed = execution.UsedGas
 		attempt.result.Failed = execution.Err != nil
 		if execution.Err != nil {
 			attempt.result.ErrMsg = execution.Err.Error()
 		}
 		attempt.result.ReturnData = append([]byte(nil), execution.ReturnData...)
+		if tx.To() == nil {
+			attempt.result.ContractAddress = crypto.CreateAddress(msg.From, tx.Nonce())
+		}
 		for _, entry := range state.GetLogs()[logStart:] {
 			copyLog := *entry
 			copyLog.TxHash = tx.Hash()
-			copyLog.Topics = append([]common.Hash(nil), entry.Topics...)
+			copyLog.TxIndex = uint(txIndex)
+			copyLog.BlockNumber = uint64(env.Height)
+			copyLog.BlockTimestamp = env.Time
+			topics := make([]common.Hash, len(entry.Topics))
+			copy(topics, entry.Topics)
+			copyLog.Topics = topics
 			copyLog.Data = append([]byte(nil), entry.Data...)
 			attempt.result.Logs = append(attempt.result.Logs, &copyLog)
 		}
@@ -542,12 +571,13 @@ func diffPendingWrites(before, after map[string][]byte) map[string][]byte {
 	delta := make(map[string][]byte)
 	for key, value := range after {
 		previous, exists := before[key]
-		if exists && bytes.Equal(previous, value) {
+		if exists && (previous == nil) == (value == nil) && bytes.Equal(previous, value) {
 			continue
 		}
-		delta[key] = append([]byte(nil), value...)
 		if value == nil {
 			delta[key] = nil
+		} else {
+			delta[key] = append([]byte(nil), value...)
 		}
 	}
 	return delta

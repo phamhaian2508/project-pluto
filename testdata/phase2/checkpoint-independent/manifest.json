@@ -1,0 +1,113 @@
+{
+  "blockSchedule": [
+    {
+      "dir": "blocks/block-01",
+      "gasUsed": 4976008,
+      "height": 1,
+      "txCount": 64
+    },
+    {
+      "dir": "blocks/block-02",
+      "gasUsed": 3881596,
+      "height": 2,
+      "txCount": 64
+    },
+    {
+      "dir": "blocks/block-03",
+      "gasUsed": 3881692,
+      "height": 3,
+      "txCount": 64
+    },
+    {
+      "dir": "blocks/block-04",
+      "gasUsed": 3881632,
+      "height": 4,
+      "txCount": 64
+    },
+    {
+      "dir": "blocks/block-05",
+      "gasUsed": 3881596,
+      "height": 5,
+      "txCount": 64
+    },
+    {
+      "dir": "blocks/block-06",
+      "gasUsed": 3881644,
+      "height": 6,
+      "txCount": 64
+    }
+  ],
+  "blocks": [
+    "blocks/block-01",
+    "blocks/block-02",
+    "blocks/block-03",
+    "blocks/block-04",
+    "blocks/block-05",
+    "blocks/block-06"
+  ],
+  "caseId": "checkpoint-independent",
+  "chainId": 1337,
+  "coinbase": "0x000000000000000000000000000000000000cafE",
+  "contractAddress": "0x000000000000000000000000000000000000C001",
+  "evmVersion": "shanghai",
+  "feeConfig": {
+    "baseFeeWei": 1,
+    "blockGasLimit": 100000000,
+    "feeCapWei": 1,
+    "tipWei": 0,
+    "txGasLimit": 1000000
+  },
+  "fork": "Shanghai",
+  "function": "hashThenIncrementOwnSlot",
+  "hashRounds": 256,
+  "initialCount": 10,
+  "inputSha256": {
+    "abi.json": "0x1b084be111c3a95455fc029e0cd2953fb3b2856c5713caedcf7b5a09d1a9fd56",
+    "alloc.json": "0x558c84876bc3bea5c32c4649c7805efb66f3247a41be4277d25ed16cc7876af8",
+    "blocks/block-01/env.json": "0xd4fc1998b4566599b8dbfa3f00eb46aa092bb5e25475ccdbd5195d29537b486c",
+    "blocks/block-01/reference-result.json": "0x26e7a63b53111b8a465eae0cf6e8400298208d8f03c79ebd64982dc78c257ea4",
+    "blocks/block-01/txs.json": "0x1e18a28bf5ebb9abb022fc5d88d0c7a37a0ad14ea02e97e5b8119e35a3bbbbe7",
+    "blocks/block-02/env.json": "0x1b6dab07c6b9eb79c0e9c5ce831c735cbd7dccf934229507742cfead333f90e8",
+    "blocks/block-02/reference-result.json": "0xb08de3ddbe83baa4764868d2deda4ea49c54a6badb160c0bec3ea62df407f991",
+    "blocks/block-02/txs.json": "0xaddda6620de78757dc1152ca3bfdffa1b390261063f493ec343329813968c45a",
+    "blocks/block-03/env.json": "0xbca49f528380db6641b40baf42c148eefac68e801fa7e391a820990e18749689",
+    "blocks/block-03/reference-result.json": "0x125f8e5eeba1b222acc8fc8af893100baf53e064fd55166223f4f31eeb8b8cc8",
+    "blocks/block-03/txs.json": "0xb82b630de8a58727e43324fd04844c4fe35eafacf5b33bed8211180603967feb",
+    "blocks/block-04/env.json": "0x9cc4220129231b06cfecf381d6f646793ce58a700c960561d4c92cd5202ca821",
+    "blocks/block-04/reference-result.json": "0x8da379c394b5848d405392a57e6fc99e024e7c3ee9537000a0683470f5229b22",
+    "blocks/block-04/txs.json": "0x629c553723448c34abc3211dc150bf6204ab99082c110bf1aded341a6f8cb37d",
+    "blocks/block-05/env.json": "0x19779d497c006bf12efa5078adc67388f16878ea69ed91d3fb719ab303db72c1",
+    "blocks/block-05/reference-result.json": "0x856ddcd4a7cd845224616c495d6212eae70dd271ee72f014086e6c2b43ba3b44",
+    "blocks/block-05/txs.json": "0xc54972f976abac4509ced1f8536677b177703d4f3a88c71c6f709a696be92025",
+    "blocks/block-06/env.json": "0x2b4110d4aa08406f2e63688423490cb8730c5e378e90bca223032dee2c4606ee",
+    "blocks/block-06/reference-result.json": "0xb17b4b9b4cb4320a6eb1354f9dd5ea7c37fe6e9706bd133bff48fb4104108747",
+    "blocks/block-06/txs.json": "0x23bfaa4ebbb60146054f3870ff2f307871c8873892b851ce8157bfeacc13db01",
+    "storage-layout.json": "0xcad29270b69ef92d5a3f81e407ecd010b6f75f829f3f94310f77d08f2e1c408d"
+  },
+  "metadataBytecodeHash": "none",
+  "optimizerEnabled": false,
+  "prng": "splitmix64",
+  "runtimeCodeHash": "0x288860c5e6ac2e650d90532c1eff5eadc077159c3d33aa7040830f6ecf355f9a",
+  "seed": 20260201,
+  "solcFullVersion": "0.8.24+commit.e11b9ed9.Linux.g++",
+  "solidityVersion": "0.8.24",
+  "trace": {
+    "function": "hashThenIncrementOwnSlot",
+    "totalOpcodeSteps": 6844,
+    "maxDepth": 1,
+    "hasExternalCall": false,
+    "sloadCount": 1,
+    "sstoreCount": 1,
+    "firstSloadStep": 6652,
+    "firstSloadPc": 1190,
+    "firstSstoreStep": 6660,
+    "firstSstorePc": 1199,
+    "firstLogStep": 6750,
+    "firstCallStep": -1,
+    "keccakTotal": 256,
+    "keccakBeforeSload": 256,
+    "keccakAfterSload": 0,
+    "keccakBeforeSstore": 256,
+    "keccakAfterSstore": 0
+  }
+}

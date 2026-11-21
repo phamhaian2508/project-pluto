@@ -1,0 +1,168 @@
+{
+  "blockSchedule": [
+    {
+      "dir": "blocks/block-01",
+      "height": 1,
+      "poolCounts": [
+        16,
+        16,
+        16,
+        16
+      ],
+      "txCount": 64
+    },
+    {
+      "dir": "blocks/block-02",
+      "height": 2,
+      "poolCounts": [
+        16,
+        16,
+        16,
+        16
+      ],
+      "txCount": 64
+    },
+    {
+      "dir": "blocks/block-03",
+      "height": 3,
+      "poolCounts": [
+        16,
+        16,
+        16,
+        16
+      ],
+      "txCount": 64
+    },
+    {
+      "dir": "blocks/block-04",
+      "height": 4,
+      "poolCounts": [
+        48,
+        6,
+        5,
+        5
+      ],
+      "txCount": 64
+    },
+    {
+      "dir": "blocks/block-05",
+      "height": 5,
+      "poolCounts": [
+        48,
+        6,
+        5,
+        5
+      ],
+      "txCount": 64
+    },
+    {
+      "dir": "blocks/block-06",
+      "height": 6,
+      "poolCounts": [
+        48,
+        6,
+        5,
+        5
+      ],
+      "txCount": 64
+    },
+    {
+      "dir": "blocks/block-07",
+      "height": 7,
+      "poolCounts": [
+        6,
+        48,
+        5,
+        5
+      ],
+      "txCount": 64
+    },
+    {
+      "dir": "blocks/block-08",
+      "height": 8,
+      "poolCounts": [
+        6,
+        48,
+        5,
+        5
+      ],
+      "txCount": 64
+    },
+    {
+      "dir": "blocks/block-09",
+      "height": 9,
+      "poolCounts": [
+        6,
+        48,
+        5,
+        5
+      ],
+      "txCount": 64
+    }
+  ],
+  "blocks": [
+    "blocks/block-01",
+    "blocks/block-02",
+    "blocks/block-03",
+    "blocks/block-04",
+    "blocks/block-05",
+    "blocks/block-06",
+    "blocks/block-07",
+    "blocks/block-08",
+    "blocks/block-09"
+  ],
+  "buildCommand": "SOLC_NODE_MODULES=/tmp/solc-oz/node_modules node testdata/phase1/swap-pools/build.mjs",
+  "caseId": "swap-pools-interleaved",
+  "chainId": 1337,
+  "coinbase": "0x000000000000000000000000000000000000cafe",
+  "evmVersion": "shanghai",
+  "fork": "Shanghai",
+  "initialReserve": "10000000000",
+  "inputSha256": {
+    "alloc.json": "0xbdada12924eedece26589cede2c0d705185236daf8fe22edab896586d96bc6cc",
+    "blocks/block-01/env.json": "0x055a15439601e38bd9f635fe8f11fef20e55d0bf4a720a22afd3295e9384b7bd",
+    "blocks/block-01/txs.json": "0x80410b9223fbeaaa52a70496fc5df348ce3ccca6dcb4546414bb8f6f28bc1d2b",
+    "blocks/block-02/env.json": "0x8529b296f98429e0c92a7f269255767b4a87aee44a8d174e5e330ee6fb59e297",
+    "blocks/block-02/txs.json": "0x4e3eafb65981d7b3861c8aa4b2f9d2ac1815658df8309c49a821ba55ef753ec0",
+    "blocks/block-03/env.json": "0xc33f6b5b69bca3cb2bb2fdc780d9e05d9027c3de978fc277fbb26a3324df2c4e",
+    "blocks/block-03/txs.json": "0x14e28a5f4a8f946e6a761cde0d851c8dc818f9f92fd1edaf951798871568853a",
+    "blocks/block-04/env.json": "0x828fbd785ccecb6671ce10df676d4d7af9a97160b61fb6da387ff4b2a4b4c606",
+    "blocks/block-04/txs.json": "0xe1c952289741a996cbfd3ab0567f77c27641304f5d29814af5dd45ad21a562e1",
+    "blocks/block-05/env.json": "0xec029740562ce87adab1109491a4cc04b34eb4a0ef0c8cce02560558932c7d27",
+    "blocks/block-05/txs.json": "0x5e8e97bf82debe610ea9923b7648c8705fd2661301967d35e320617b61be99ad",
+    "blocks/block-06/env.json": "0xefba77a062793c5280bf52037bae61bbd5f3a61ed9e7c944e4379617baf7e927",
+    "blocks/block-06/txs.json": "0x2ca892bc23169837f379c33d83f970fee66a1b5a8635ae79e66189dde2f5bdc6",
+    "blocks/block-07/env.json": "0xfe6ad77b0630c0bca2a25e7ca9af492ebb2a78019c2be598adf209e5d31e42dc",
+    "blocks/block-07/txs.json": "0x20464985918d5620339d3767927f54ba2ba416474a43632f8e39c88b9486ef3d",
+    "blocks/block-08/env.json": "0xaedcee5187ad59ae2d28d41534f3f1f55a8880f3fb03bd4276ff502a27fb2571",
+    "blocks/block-08/txs.json": "0x38f12007f26c7c2b1ed07ffd0dacde027a86aec69a0fb4c2b221756bea7b01a8",
+    "blocks/block-09/env.json": "0xb93846fcdbb7d4e4cc17893544c2c06a5127ef7849699760858b7882216b1f6c",
+    "blocks/block-09/txs.json": "0xe71e72d75509c2d6ea8feb91928126e9d73feb52e68c39f37b9f7a8942eb860a"
+  },
+  "metadataBytecodeHash": "none",
+  "openZeppelinVersion": "4.9.6",
+  "ordering": "interleaved",
+  "poolAddresses": [
+    "0x000000000000000000000000000000000000c101",
+    "0x000000000000000000000000000000000000c102",
+    "0x000000000000000000000000000000000000c103",
+    "0x000000000000000000000000000000000000c104"
+  ],
+  "poolReserve0Slot": 2,
+  "poolReserve1Slot": 3,
+  "poolRuntimeCodeHash": "0x21c4708d021be0b249f23e5e8585b50905bd4fe9949966d53de22621b4877ad1",
+  "prng": "splitmix64",
+  "routerAddress": "0x000000000000000000000000000000000000b001",
+  "routerRuntimeCodeHash": "0xeb2434663870948069133ab8ecf76daf9e6b0b309e8b15c610d1221dd4474ba0",
+  "seed": 20260401,
+  "solidityVersion": "0.8.24",
+  "sourceCase": "swap-pools",
+  "swapExactInSelector": "0x4de6f7d2",
+  "tokenAddresses": [
+    "0x000000000000000000000000000000000000a001",
+    "0x000000000000000000000000000000000000a002"
+  ],
+  "tokenAllowancesSlot": 1,
+  "tokenRuntimeCodeHash": "0xa78dfa9373d661f184caea9f87e8a71536053b95a69ca100ca08eb63f100cc97",
+  "traderCount": 64
+}

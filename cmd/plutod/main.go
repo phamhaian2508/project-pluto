@@ -30,29 +30,40 @@ import (
 	plutoconfig "github.com/phamhaian2508/project-pluto/internal/config"
 	"github.com/phamhaian2508/project-pluto/internal/ethrpc"
 	"github.com/phamhaian2508/project-pluto/internal/evm"
+	"github.com/phamhaian2508/project-pluto/internal/lab"
 	"github.com/phamhaian2508/project-pluto/internal/store"
 )
 
 var (
-	homeDir            string
-	executor           string
-	workerSetting      string
-	logLevel           string
-	timeoutCommit      string
-	ethRPCAddress      string
-	checkpointPolicy   string
-	checkpointInterval uint64
+	homeDir               string
+	executor              string
+	workerSetting         string
+	logLevel              string
+	timeoutCommit         string
+	ethRPCAddress         string
+	evmChainID            int64
+	checkpointFlag        string
+	checkpointPolicy      string
+	checkpointInterval    uint64
+	checkpointBudgetBytes int64
+	checkpointModelPath   string
+	selectionPath         string
 )
 
 func init() {
 	flag.StringVar(&homeDir, "home", "", "Path to the home directory")
-	flag.StringVar(&executor, "executor", "sequential", "Block executor: sequential or parallel")
+	flag.StringVar(&executor, "executor", "sequential", "Block executor: sequential, parallel, occ, grouped or predicted-occ")
 	flag.StringVar(&workerSetting, "workers", "auto", "Parallel executor workers: auto or a positive integer")
 	flag.StringVar(&logLevel, "log-level", "", "Override CometBFT log level (debug, info, error, none)")
 	flag.StringVar(&timeoutCommit, "timeout-commit", "", "Override CometBFT timeout_commit (for example 1s)")
 	flag.StringVar(&ethRPCAddress, "eth-rpc", plutoconfig.EthereumRPCListenAddr, "Ethereum JSON-RPC listen address")
-	flag.StringVar(&checkpointPolicy, "checkpoint-policy", "p0", "Parallel checkpoint policy: p0, p1, p2 or p3")
-	flag.Uint64Var(&checkpointInterval, "checkpoint-interval", 100, "Opcode interval for checkpoint policy p2")
+	flag.Int64Var(&evmChainID, "chain-id", plutoconfig.EVMChainID, "EVM chain ID (default 31337; use 1337 for Phase 4 verification)")
+	flag.StringVar(&checkpointFlag, "checkpoint", "", "Checkpoint policy: off, fixed, history, adaptive (overrides --checkpoint-policy)")
+	flag.StringVar(&checkpointPolicy, "checkpoint-policy", "p0", "Legacy alias for checkpoint policy: p0, p1, p2, p3, off, fixed, history or adaptive")
+	flag.Uint64Var(&checkpointInterval, "checkpoint-interval", 0, "Opcode interval for checkpoint policy fixed/p2 (0 = use model.CheckpointEvery for adaptive, or 100 default)")
+	flag.Int64Var(&checkpointBudgetBytes, "checkpoint-budget-bytes", -1, "Hard RAM budget in bytes for checkpoint store (-1 = unset, 0 = behaves like off)")
+	flag.StringVar(&checkpointModelPath, "checkpoint-model", "", "Path to calibrated Phase 3 model.json (required when --checkpoint=adaptive)")
+	flag.StringVar(&selectionPath, "selection", "", "Optional path to Phase 4 selection.json to load winning executor/checkpoint config")
 }
 
 func parseWorkerSetting(setting string) (int, bool, error) {
@@ -68,18 +79,55 @@ func parseWorkerSetting(setting string) (int, bool, error) {
 }
 
 func parseCheckpointSetting(policy string, interval uint64) (evm.CheckpointConfig, error) {
-	parsed, err := evm.ParseCheckpointPolicy(policy)
+	return parseCheckpointConfig(policy, interval, -1)
+}
+
+func parseCheckpointConfig(policy string, interval uint64, budgetBytes int64) (evm.CheckpointConfig, error) {
+	return parseCheckpointConfigWithModel(policy, interval, budgetBytes, "")
+}
+
+func parseCheckpointConfigWithModel(policy string, interval uint64, budgetBytes int64, modelPath string) (evm.CheckpointConfig, error) {
+	trimmed := strings.TrimSpace(policy)
+	parsed, err := evm.ParseCheckpointPolicy(trimmed)
 	if err != nil {
 		return evm.CheckpointConfig{}, err
 	}
 	config := evm.CheckpointConfig{Policy: parsed}
-	if parsed == evm.CheckpointPolicyP2 {
+	if parsed == evm.CheckpointPolicyP2 || parsed == evm.CheckpointPolicyP3 || parsed == evm.CheckpointPolicyP4 {
 		config.Interval = interval
+	}
+	if budgetBytes >= 0 {
+		config.UseBudget = true
+		config.BudgetBytes = uint64(budgetBytes)
+	}
+	if parsed == evm.CheckpointPolicyAdaptive {
+		if strings.TrimSpace(modelPath) == "" {
+			return evm.CheckpointConfig{}, fmt.Errorf("checkpoint policy %q requires --checkpoint-model <path/to/model.json>", trimmed)
+		}
+		model, err := evm.LoadAdaptiveModel(modelPath)
+		if err != nil {
+			return evm.CheckpointConfig{}, fmt.Errorf("load --checkpoint-model %q: %w", modelPath, err)
+		}
+		config.AdaptiveModel = model
+		if !config.UseBudget && model.TightBudgetBytes > 0 {
+			config.UseBudget = true
+			config.BudgetBytes = model.TightBudgetBytes
+		}
+		if config.Interval == 0 && model.CheckpointEvery > 0 {
+			config.Interval = model.CheckpointEvery
+		}
 	}
 	if err := config.Validate(); err != nil {
 		return evm.CheckpointConfig{}, err
 	}
 	return config, nil
+}
+
+func resolveCheckpointFlag(checkpoint, legacyPolicy string) string {
+	if strings.TrimSpace(checkpoint) != "" {
+		return checkpoint
+	}
+	return legacyPolicy
 }
 
 // Bộ cung cấp cơ sở dữ liệu Pebble.
@@ -89,13 +137,51 @@ func PebbleDBProvider(ctx *cfg.DBContext) (dbm.DB, error) {
 
 func main() {
 	flag.Parse()
+	intervalExplicit := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "checkpoint-interval" {
+			intervalExplicit = true
+		}
+	})
+	if strings.TrimSpace(selectionPath) != "" {
+		sel, err := lab.LoadPhase4Selection(selectionPath)
+		if err != nil {
+			panic(err)
+		}
+		executor = sel.Mode
+		workerSetting = strconv.Itoa(sel.Workers)
+		checkpointFlag = sel.CheckpointPolicy
+		if sel.CheckpointInterval > 0 {
+			checkpointInterval = sel.CheckpointInterval
+			intervalExplicit = true
+		}
+		if sel.BudgetBytes > 0 && sel.CheckpointPolicy != lab.CheckpointOff {
+			checkpointBudgetBytes = int64(sel.BudgetBytes)
+		}
+		if sel.ModelPath != "" && strings.TrimSpace(checkpointModelPath) == "" {
+			checkpointModelPath = sel.ModelPath
+		}
+	}
 	workers, autoWorkers, err := parseWorkerSetting(workerSetting)
 	if err != nil {
 		panic(err)
 	}
-	checkpointConfig, err := parseCheckpointSetting(checkpointPolicy, checkpointInterval)
+	effectivePolicy := resolveCheckpointFlag(checkpointFlag, checkpointPolicy)
+	if !intervalExplicit && checkpointInterval == 0 {
+		if p, parseErr := evm.ParseCheckpointPolicy(effectivePolicy); parseErr == nil && p != evm.CheckpointPolicyAdaptive {
+			checkpointInterval = 100
+		}
+	}
+	checkpointConfig, err := parseCheckpointConfigWithModel(effectivePolicy, checkpointInterval, checkpointBudgetBytes, checkpointModelPath)
 	if err != nil {
 		panic(err)
+	}
+	modelSHA := ""
+	if checkpointConfig.AdaptiveModel != nil {
+		modelSHA = checkpointConfig.AdaptiveModel.SHA256()
+	}
+	if evmChainID <= 0 {
+		panic(fmt.Errorf("chain-id must be positive, got %d", evmChainID))
 	}
 	if homeDir == "" {
 		homeDir = os.ExpandEnv("$HOME/.plutod")
@@ -146,7 +232,7 @@ func main() {
 	// Khởi tạo App (DB nằm trong data/)
 	appDBDir := filepath.Join(homeDir, "data")
 
-	myApp, err := app.NewApp(appDBDir, appLogger)
+	myApp, err := app.NewAppWithChainID(appDBDir, appLogger, evmChainID)
 	if err != nil {
 		panic(fmt.Errorf("failed to create app: %w", err))
 	}
@@ -196,7 +282,19 @@ func main() {
 		panic(fmt.Errorf("failed to start Ethereum JSON-RPC server: %w", err))
 	}
 
-	logger.Info("Node Started", "home", homeDir, "executor", executor, "checkpoint_policy", checkpointConfig.Policy.String(), "checkpoint_interval", checkpointConfig.Interval)
+	logger.Info("Node Started",
+		"home", homeDir,
+		"chain_id", evmChainID,
+		"executor", executor,
+		"workers", workers,
+		"auto_workers", autoWorkers,
+		"checkpoint_policy", checkpointConfig.Policy.Phase2Name(),
+		"checkpoint_interval", checkpointConfig.Interval,
+		"checkpoint_use_budget", checkpointConfig.UseBudget,
+		"checkpoint_budget_bytes", checkpointConfig.BudgetBytes,
+		"checkpoint_model_sha256", modelSHA,
+		"selection", selectionPath,
+	)
 	logger.Info("Ethereum JSON-RPC Started", "address", ethRPCAddress)
 
 	// Chờ tín hiệu shutdown

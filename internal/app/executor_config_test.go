@@ -48,3 +48,35 @@ func TestConfigureCheckpointsRequiresParallelExecutor(t *testing.T) {
 		t.Fatalf("parallel executor rejected P2: %v", err)
 	}
 }
+
+func TestConfigureExecutorSupportsPhase4ModesAndBudget(t *testing.T) {
+	application := &App{}
+	for _, mode := range []string{"sequential", "parallel", "occ", "grouped", "predicted-occ"} {
+		if err := application.ConfigureExecutor(mode, 4); err != nil {
+			t.Fatalf("ConfigureExecutor(%q, 4) failed: %v", mode, err)
+		}
+		if application.executorMode != mode {
+			t.Fatalf("executorMode = %q, want %q", application.executorMode, mode)
+		}
+	}
+	if err := application.ConfigureExecutor("occ", 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.ConfigureCheckpoints(evm.CheckpointConfig{
+		Policy:      evm.CheckpointPolicyFixed,
+		Interval:    50,
+		UseBudget:   true,
+		BudgetBytes: 65536,
+	}); err != nil {
+		t.Fatalf("occ executor rejected budgeted fixed checkpoint: %v", err)
+	}
+	if err := application.ConfigureExecutor("grouped", 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := application.ConfigureCheckpoints(evm.CheckpointConfig{Policy: evm.CheckpointPolicyOff}); err != nil {
+		t.Fatalf("grouped executor rejected off checkpoint: %v", err)
+	}
+	if err := application.ConfigureCheckpoints(evm.CheckpointConfig{Policy: evm.CheckpointPolicyFixed, Interval: 50}); err == nil {
+		t.Fatal("grouped executor accepted active checkpoint policy")
+	}
+}

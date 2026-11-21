@@ -14,7 +14,7 @@ import (
 type CallArgs = evm.CallArgs
 type CallResult = evm.CallResult
 
-// Call thực thi trên trạng thái đã chốt mới nhất rồi loại bỏ mọi thay đổi.
+// Call thực thi trên một snapshot PebbleDB cố định đã chốt rồi loại bỏ mọi thay đổi.
 func (app *App) Call(args CallArgs) (*CallResult, error) {
 	if args.Gas == 0 {
 		args.Gas = blockGasLimit
@@ -22,10 +22,13 @@ func (app *App) Call(args CallArgs) (*CallResult, error) {
 	if args.Gas > blockGasLimit {
 		return nil, fmt.Errorf("call gas limit %d exceeds block gas limit %d", args.Gas, blockGasLimit)
 	}
-	return app.executeReadOnlyCall(args)
+	committedHeight, appHash, snap := app.committedSnapshot()
+	defer snap.Close()
+	env := app.callBlockEnvFromKV(committedHeight, appHash, snap)
+	return app.executeReadOnlyCallOnKV(snap, env, args)
 }
 
-// EstimateGas tìm giới hạn gas nhỏ nhất để lời gọi thực thi thành công.
+// EstimateGas tìm giới hạn gas nhỏ nhất để lời gọi thực thi thành công trên cùng 1 snapshot nhất quán.
 func (app *App) EstimateGas(args CallArgs) (uint64, error) {
 	intrinsic, err := core.IntrinsicGas(args.Data, args.AccessList, nil, args.To == nil, true, true, true)
 	if err != nil {
@@ -39,8 +42,12 @@ func (app *App) EstimateGas(args CallArgs) (uint64, error) {
 		return 0, fmt.Errorf("gas required exceeds allowance (%d)", cap)
 	}
 
+	committedHeight, appHash, snap := app.committedSnapshot()
+	defer snap.Close()
+	env := app.callBlockEnvFromKV(committedHeight, appHash, snap)
+
 	args.Gas = cap
-	result, err := app.executeReadOnlyCall(args)
+	result, err := app.executeReadOnlyCallOnKV(snap, env, args)
 	if err != nil {
 		return 0, fmt.Errorf("estimate gas at allowance %d: %w", cap, err)
 	}
@@ -52,7 +59,7 @@ func (app *App) EstimateGas(args CallArgs) (uint64, error) {
 	for low+1 < high {
 		mid := low + (high-low)/2
 		args.Gas = mid
-		result, err = app.executeReadOnlyCall(args)
+		result, err = app.executeReadOnlyCallOnKV(snap, env, args)
 		if err != nil {
 			if errors.Is(err, core.ErrIntrinsicGas) {
 				low = mid
@@ -73,20 +80,28 @@ func (app *App) EstimateGas(args CallArgs) (uint64, error) {
 	return high, nil
 }
 
-func (app *App) executeReadOnlyCall(args CallArgs) (*CallResult, error) {
-	return evm.ExecuteCall(evm.NewPebbleStateDB(app.db), newChainConfig(), app.callBlockEnv(), args)
+func (app *App) executeReadOnlyCallOnKV(kv evm.ReadOnlyKV, env evm.BlockEnv, args CallArgs) (*CallResult, error) {
+	stateDB := evm.NewPebbleStateDBFromKV(kv)
+	res, err := evm.ExecuteCall(stateDB, app.chainConfig(), env, args)
+	if err != nil {
+		return nil, err
+	}
+	if dbErr := stateDB.Err(); dbErr != nil {
+		return nil, fmt.Errorf("read-only call state db error: %w", dbErr)
+	}
+	return res, nil
 }
 
-func (app *App) callBlockEnv() evm.BlockEnv {
-	height := app.currentHeight
+func (app *App) callBlockEnvFromKV(committedHeight uint64, appHash common.Hash, kv evm.ReadOnlyKV) evm.BlockEnv {
+	height := int64(committedHeight)
 	env := evm.BlockEnv{
 		Height:       height,
 		GasLimit:     blockGasLimit,
 		BaseFee:      new(big.Int),
-		PreviousRoot: append([]byte(nil), app.appHash...),
+		PreviousRoot: append([]byte(nil), appHash.Bytes()...),
 	}
-	if height > 0 {
-		if block, found, err := app.EthereumBlockByNumber(uint64(height)); err == nil && found {
+	if committedHeight > 0 {
+		if block, found, err := ethereumBlockByNumberFromKV(kv, committedHeight); err == nil && found {
 			env.Time = block.Timestamp
 			env.Coinbase = block.Coinbase
 			env.BaseFee = new(big.Int)
@@ -96,10 +111,10 @@ func (app *App) callBlockEnv() evm.BlockEnv {
 		}
 	}
 	env.GetHash = func(number uint64) common.Hash {
-		if number >= uint64(height) || uint64(height)-number > 256 {
+		if number >= committedHeight || committedHeight-number > 256 || kv == nil {
 			return common.Hash{}
 		}
-		encoded, err := app.db.Get(blockHashKey(number))
+		encoded, err := kv.Get(blockHashKey(number))
 		if err != nil {
 			return common.Hash{}
 		}
