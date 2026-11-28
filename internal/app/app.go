@@ -396,7 +396,7 @@ func (app *App) ConfigureExecutor(mode string, workers int) error {
 	case "predicted-occ":
 		app.executor = evm.NewPredictedOCCExecutor(cfg, cid, workers)
 	default:
-		return fmt.Errorf("unknown executor %q (want sequential, parallel, occ, grouped or predicted-occ)", mode)
+		return fmt.Errorf("unknown executor %q (want sequential, occ, grouped or predicted-occ; parallel is a legacy alias)", mode)
 	}
 	app.executorMode = mode
 	app.workers = workers
@@ -444,7 +444,7 @@ func (app *App) ConfigureAdaptiveExecutor(mode string) error {
 		app.workers = defaultWorkers
 		app.executor = evm.NewPredictedOCCExecutor(cfg, cid, defaultWorkers)
 	default:
-		return fmt.Errorf("unknown executor %q (want sequential, parallel, occ, grouped or predicted-occ)", mode)
+		return fmt.Errorf("unknown executor %q (want sequential, occ, grouped or predicted-occ; parallel is a legacy alias)", mode)
 	}
 	return nil
 }
@@ -460,7 +460,7 @@ func (app *App) ConfigureCheckpoints(config evm.CheckpointConfig) error {
 		if config.Policy == evm.CheckpointPolicyP0 {
 			return nil
 		}
-		return fmt.Errorf("checkpoint policy %s requires parallel, occ or predicted-occ executor", config.Policy)
+		return fmt.Errorf("checkpoint policy %s requires occ (parallel alias) or predicted-occ executor", config.Policy)
 	case "parallel", "occ", "predicted-occ":
 		if configurable, ok := app.executor.(checkpointConfigurable); ok {
 			if parallel, isParallel := app.executor.(*evm.ParallelExecutor); isParallel && config.UseBudget {

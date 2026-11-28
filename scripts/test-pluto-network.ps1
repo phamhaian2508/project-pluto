@@ -91,9 +91,9 @@ try {
     Write-Host "Check all validator heights and AppHashes with .\scripts\pluto-network-dashboard.ps1 -Root `"$Root`""
 
     if ($RunExecutorComparison) {
-        Write-Host "Running the existing sequential-versus-parallel executor report (this is a controlled block-executor benchmark, not network TPS)..."
+        Write-Host "Running the existing sequential-versus-OCC executor report (this is a controlled block-executor benchmark, not network TPS)..."
         go test ./test/harness -run '^TestSequentialParallelPerformanceReport$' -count=1 -v
-        if ($LASTEXITCODE -ne 0) { throw "Sequential/parallel executor comparison failed." }
+        if ($LASTEXITCODE -ne 0) { throw "Sequential/OCC executor comparison failed." }
     }
 }
 finally { Pop-Location }

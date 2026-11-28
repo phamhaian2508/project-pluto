@@ -430,7 +430,7 @@ func runBench(args []string, stdout, stderr io.Writer) int {
 	cpEvery := fs.Uint64("checkpoint-every", lab.DefaultCheckpointInterval, "alias of --checkpoint-n (must be > 0)")
 	budgetBytes := fs.Uint64("checkpoint-budget-bytes", lab.DefaultCheckpointBudgetBytes, "hard RAM budget M in exact bytes (0 disables capture)")
 	budgetMiB := fs.Int64("checkpoint-budget-mib", 64, "hard RAM budget M in MiB (mutually exclusive with --checkpoint-budget-bytes)")
-	workers := fs.Int("workers", 4, "worker count when --mode is a single parallel mode")
+	workers := fs.Int("workers", 4, "worker count when --mode selects one worker-based executor")
 	runs := fs.Int("runs", 10, "measured runs per configuration")
 	outDir := fs.String("out", "", "output directory for CSV and summary (defaults to results/<suite>)")
 	testdataRoot := fs.String("testdata", "", "path to suite testdata directory (defaults to testdata/<suite>)")

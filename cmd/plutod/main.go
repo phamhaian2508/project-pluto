@@ -52,8 +52,8 @@ var (
 
 func init() {
 	flag.StringVar(&homeDir, "home", "", "Path to the home directory")
-	flag.StringVar(&executor, "executor", "sequential", "Block executor: sequential, parallel, occ, grouped or predicted-occ")
-	flag.StringVar(&workerSetting, "workers", "auto", "Parallel executor workers: auto or a positive integer")
+	flag.StringVar(&executor, "executor", "sequential", "Block executor: sequential, occ (parallel alias), grouped or predicted-occ")
+	flag.StringVar(&workerSetting, "workers", "auto", "Worker count: auto adjusts OCC; grouped/predicted-occ use available CPU count")
 	flag.StringVar(&logLevel, "log-level", "", "Override CometBFT log level (debug, info, error, none)")
 	flag.StringVar(&timeoutCommit, "timeout-commit", "", "Override CometBFT timeout_commit (for example 1s)")
 	flag.StringVar(&ethRPCAddress, "eth-rpc", plutoconfig.EthereumRPCListenAddr, "Ethereum JSON-RPC listen address")
@@ -161,6 +161,10 @@ func main() {
 		if sel.ModelPath != "" && strings.TrimSpace(checkpointModelPath) == "" {
 			checkpointModelPath = sel.ModelPath
 		}
+	}
+	// occ là tên chính thức; parallel vẫn được nhận làm bí danh tương thích.
+	if strings.EqualFold(strings.TrimSpace(executor), "parallel") {
+		executor = "occ"
 	}
 	workers, autoWorkers, err := parseWorkerSetting(workerSetting)
 	if err != nil {
