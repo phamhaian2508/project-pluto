@@ -19,10 +19,11 @@ const comparisonReportRepetitions = 5
 const comparisonBlocksPerSample = 5
 
 type comparisonMode struct {
-	name       string
-	workers    int
-	sequential bool
-	automatic  bool
+	name          string
+	workers       int
+	sequential    bool
+	automatic     bool
+	slidingWindow bool
 }
 
 type comparisonSample struct {
@@ -33,6 +34,7 @@ type comparisonSample struct {
 	workerMax int
 	workerAvg float64
 	aborts    float64
+	retried   float64
 	retries   float64
 	result    differentialObservation
 }
@@ -45,6 +47,7 @@ type comparisonSummary struct {
 	workerMax      int
 	workerAvg      float64
 	medianAborts   float64
+	medianRetried  float64
 	medianRetries  float64
 	coefficientVar float64
 	samples        []comparisonSample
@@ -56,23 +59,25 @@ func TestSequentialParallelPerformanceReport(t *testing.T) {
 	const seed = 0x4d345f
 	modes := []comparisonMode{
 		{name: "Sequential", sequential: true},
-		{name: "Parallel auto", automatic: true},
-		{name: "Parallel 1w", workers: 1},
-		{name: "Parallel 2w", workers: 2},
-		{name: "Parallel 4w", workers: 4},
-		{name: "Parallel 8w", workers: 8},
+		{name: "OCC auto", automatic: true, slidingWindow: true},
+		{name: "OCC 1w", workers: 1, slidingWindow: true},
+		{name: "OCC 2w", workers: 2, slidingWindow: true},
+		{name: "OCC 4w", workers: 4, slidingWindow: true},
+		{name: "OCC 8w", workers: 8, slidingWindow: true},
 	}
 
 	fmt.Fprintln(os.Stdout, "\nPLUTO EXECUTOR COMPARISON")
 	fmt.Fprintf(os.Stdout, "Go %s | %s/%s | CPU %d | GOMAXPROCS %d\n", runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), runtime.GOMAXPROCS(0))
-	fmt.Fprintf(os.Stdout, "Workload: independent native-coin transfers | seed 0x%x\n", seed)
+	fmt.Fprintf(os.Stdout, "Workload: fully disjoint native-coin transfers | seed 0x%x\n", seed)
 	fmt.Fprintf(os.Stdout, "Measurement: median of %d samples; %d blocks per sample; ExecuteBlock only\n", comparisonReportRepetitions, comparisonBlocksPerSample)
+	fmt.Fprintln(os.Stdout, "OCC modes: SlidingWindow enabled; worker counts are local to one executor")
 	fmt.Fprintln(os.Stdout, "Correctness: each mode checked against Sequential; visible state and tx outputs also checked against geth")
 	fmt.Fprintln(os.Stdout, "Memory: allocated bytes and allocation count per block; not peak process RAM")
 
 	parallelFasterSizes := 0
 	uncertainSizes := 0
-	for _, txCount := range []int{128, 512, 1024} {
+	breakEvenByMode := make(map[string]int, len(modes)-1)
+	for _, txCount := range []int{32, 64, 128, 256, 512, 1024} {
 		t.Run(fmt.Sprintf("transactions-%d", txCount), func(t *testing.T) {
 			workload := newIndependentTransferComparisonWorkload(t, txCount)
 			geth := runGethDifferentialWorkload(t, workload)
@@ -118,6 +123,14 @@ func TestSequentialParallelPerformanceReport(t *testing.T) {
 				stats[mode.name] = summarizeComparisonSamples(stats[mode.name].samples)
 			}
 			seq := stats[modes[0].name]
+			if seq.coefficientVar <= 0.10 {
+				for _, mode := range modes[1:] {
+					current := stats[mode.name]
+					if breakEvenByMode[mode.name] == 0 && current.coefficientVar <= 0.10 && current.medianDuration < seq.medianDuration {
+						breakEvenByMode[mode.name] = txCount
+					}
+				}
+			}
 			fastestName := modes[0].name
 			fastestTime := seq.medianDuration
 
@@ -148,22 +161,18 @@ func TestSequentialParallelPerformanceReport(t *testing.T) {
 					fastestName, fastestTime = mode.name, current.medianDuration
 				}
 			}
-			fmt.Fprintln(os.Stdout, "\nPARALLEL DETAILS")
-			fmt.Fprintln(os.Stdout, "Mode           configured  active workers (min..max / avg)  abort/block  retry/block  result")
+			fmt.Fprintln(os.Stdout, "\nOCC DETAILS")
+			fmt.Fprintln(os.Stdout, "Mode           configured  avg active workers  retried tx/block  total retries/block  result")
 			for _, mode := range modes[1:] {
 				current := stats[mode.name]
 				configured := "auto"
 				if !mode.automatic {
 					configured = fmt.Sprintf("%d", mode.workers)
 				}
-				active := "not reported"
-				if current.workerMin > 0 {
-					active = fmt.Sprintf("%d..%d / %.1f", current.workerMin, current.workerMax, current.workerAvg)
-				}
-				fmt.Fprintf(os.Stdout, "%-14s %-11s %-33s %-12.1f %-12.1f PASS\n", mode.name, configured, active, current.medianAborts, current.medianRetries)
+				fmt.Fprintf(os.Stdout, "%-14s %-11s %-19.2f %-16.1f %-20.1f PASS\n", mode.name, configured, current.workerAvg, current.medianRetried, current.medianRetries)
 			}
 			fmt.Fprintln(os.Stdout, "PASS = tx status/gas/logs and visible state matched; Pluto state root matched Sequential.")
-			fmt.Fprintln(os.Stdout, "Auto uses GOMAXPROCS as its worker limit and adjusts for conflicts; independent transfers may keep the full limit.")
+			fmt.Fprintln(os.Stdout, "Auto uses GOMAXPROCS as its worker limit and adjusts for conflicts; disjoint transfers may keep the full limit.")
 
 			fastest := stats[fastestName]
 			if seq.medianDuration <= 0 || fastest.medianDuration <= 0 {
@@ -181,11 +190,21 @@ func TestSequentialParallelPerformanceReport(t *testing.T) {
 		})
 	}
 
+	fmt.Fprintln(os.Stdout, "\nOBSERVED BREAK-EVEN")
+	fmt.Fprintln(os.Stdout, "First sampled transaction count where OCC median < Sequential median and both timing CVs <= 10%:")
+	for _, mode := range modes[1:] {
+		if count := breakEvenByMode[mode.name]; count > 0 {
+			fmt.Fprintf(os.Stdout, "%-10s %d transfers/block\n", mode.name, count)
+		} else {
+			fmt.Fprintf(os.Stdout, "%-10s not observed in tested range (32..1024)\n", mode.name)
+		}
+	}
+	fmt.Fprintln(os.Stdout, "This is the first crossover on the sampled grid, not an interpolated or universal threshold.")
 	fmt.Fprintln(os.Stdout, "\nFINAL: performance conclusion applies only to this transfer workload and recorded machine; correctness was checked for every row.")
 	if uncertainSizes > 0 {
-		fmt.Fprintf(os.Stdout, "Parallel was faster and stable at %d/3 sizes; %d/3 sizes need a more stable measurement.\n", parallelFasterSizes, uncertainSizes)
+		fmt.Fprintf(os.Stdout, "OCC was fastest and stable at %d/6 sizes; %d/6 sizes need a more stable measurement.\n", parallelFasterSizes, uncertainSizes)
 	} else {
-		fmt.Fprintf(os.Stdout, "Parallel was fastest and stable at %d/3 sizes.\n", parallelFasterSizes)
+		fmt.Fprintf(os.Stdout, "OCC was fastest and stable at %d/6 sizes.\n", parallelFasterSizes)
 	}
 }
 
@@ -196,16 +215,20 @@ func runComparisonSample(t *testing.T, workload differentialWorkload, mode compa
 	case mode.sequential:
 		executor = evm.NewSequentialExecutor(newChainConfig(), chainID)
 	case mode.automatic:
-		executor = evm.NewAdaptiveParallelExecutor(newChainConfig(), chainID, 0)
+		parallel := evm.NewAdaptiveParallelExecutor(newChainConfig(), chainID, 0)
+		parallel.SlidingWindow = mode.slidingWindow
+		executor = parallel
 	default:
-		executor = evm.NewParallelExecutor(newChainConfig(), chainID, mode.workers)
+		parallel := evm.NewParallelExecutor(newChainConfig(), chainID, mode.workers)
+		parallel.SlidingWindow = mode.slidingWindow
+		executor = parallel
 	}
 
 	balances := workloadBalances(workload)
 	var totalDuration time.Duration
 	var totalBytes, totalAllocs uint64
 	var workerMin, workerMax int
-	var workerAvg, aborts, retries float64
+	var workerAvg, aborts, retried, retries float64
 	var observation differentialObservation
 	for i := 0; i < comparisonBlocksPerSample; i++ {
 		db, err := store.NewPebbleDB("comparison-report", t.TempDir())
@@ -246,22 +269,37 @@ func runComparisonSample(t *testing.T, workload differentialWorkload, mode compa
 		totalAllocs += after.Mallocs - before.Mallocs
 		if !mode.sequential {
 			metrics := result.Metrics
-			min := int(metrics["worker_active_min"])
-			max := int(metrics["worker_active_max"])
-			if min > 0 && (workerMin == 0 || min < workerMin) {
-				workerMin = min
+			configuredWorkers := metrics["worker_count"]
+			if _, slidingWindowMetric := metrics["worker_idle_ns"]; slidingWindowMetric {
+				idleNanos := metrics["worker_idle_ns"]
+				activeAverage := configuredWorkers
+				if duration > 0 && configuredWorkers > 0 {
+					activeAverage -= idleNanos / float64(duration.Nanoseconds())
+					activeAverage = math.Max(0, math.Min(configuredWorkers, activeAverage))
+				}
+				workerAvg += activeAverage
+			} else {
+				min := int(metrics["worker_active_min"])
+				max := int(metrics["worker_active_max"])
+				if min > 0 && (workerMin == 0 || min < workerMin) {
+					workerMin = min
+				}
+				if max > workerMax {
+					workerMax = max
+				}
+				workerAvg += metrics["worker_active_avg"]
 			}
-			if max > workerMax {
-				workerMax = max
+			retriedTxCount, hasRetriedMetric := metrics["retried_txs"]
+			if !hasRetriedMetric {
+				retriedTxCount = metrics["abort_total"]
 			}
-			workerAvg += metrics["worker_active_avg"]
+			retried += retriedTxCount
 			aborts += metrics["abort_total"]
-			retryCount, hasRetryMetric := metrics["retry_total"]
-			if !hasRetryMetric {
-				// In the specialized transfer path each abort reruns that transaction once.
-				retryCount = metrics["abort_total"]
+			totalRetries, hasRetriesMetric := metrics["total_retries"]
+			if !hasRetriesMetric {
+				totalRetries = metrics["retry_total"]
 			}
-			retries += retryCount
+			retries += totalRetries
 		}
 		current := capturePlutoObservation(stateDB, result, workload)
 		current.stateRoot = common.BytesToHash(result.StateRoot[:])
@@ -285,6 +323,7 @@ func runComparisonSample(t *testing.T, workload differentialWorkload, mode compa
 		workerMax: workerMax,
 		workerAvg: workerAvg / comparisonBlocksPerSample,
 		aborts:    aborts / comparisonBlocksPerSample,
+		retried:   retried / comparisonBlocksPerSample,
 		retries:   retries / comparisonBlocksPerSample,
 		result:    observation,
 	}
@@ -295,6 +334,7 @@ func summarizeComparisonSamples(samples []comparisonSample) comparisonSummary {
 	bytes := make([]uint64, len(samples))
 	allocs := make([]uint64, len(samples))
 	workers := make([]float64, len(samples))
+	retried := make([]float64, len(samples))
 	aborts := make([]float64, len(samples))
 	retries := make([]float64, len(samples))
 	mean := 0.0
@@ -304,6 +344,7 @@ func summarizeComparisonSamples(samples []comparisonSample) comparisonSummary {
 		bytes[i] = sample.bytes
 		allocs[i] = sample.allocs
 		workers[i] = sample.workerAvg
+		retried[i] = sample.retried
 		aborts[i] = sample.aborts
 		retries[i] = sample.retries
 		mean += float64(sample.duration)
@@ -329,6 +370,7 @@ func summarizeComparisonSamples(samples []comparisonSample) comparisonSummary {
 	sort.Slice(bytes, func(i, j int) bool { return bytes[i] < bytes[j] })
 	sort.Slice(allocs, func(i, j int) bool { return allocs[i] < allocs[j] })
 	sort.Float64s(workers)
+	sort.Float64s(retried)
 	sort.Float64s(aborts)
 	sort.Float64s(retries)
 	middle := len(samples) / 2
@@ -340,6 +382,7 @@ func summarizeComparisonSamples(samples []comparisonSample) comparisonSummary {
 		workerMax:      workerMax,
 		workerAvg:      workers[middle],
 		medianAborts:   aborts[middle],
+		medianRetried:  retried[middle],
 		medianRetries:  retries[middle],
 		coefficientVar: cv,
 		samples:        samples,

@@ -11,7 +11,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $runId = Get-Date -Format "yyyyMMdd-HHmmss-fff"
 $comparisonRoot = ".pluto-network\comparisons\$runId"
 $sequentialRoot = "$comparisonRoot\sequential"
-$parallelRoot = "$comparisonRoot\parallel"
+$occRoot = "$comparisonRoot\occ"
 $absoluteComparisonRoot = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $comparisonRoot))
 
 function Test-PortAvailable {
@@ -32,11 +32,11 @@ function Test-PortAvailable {
 }
 
 function Test-ComparisonPortOffsets {
-    param([int]$SequentialOffset, [int]$ParallelOffset)
+    param([int]$SequentialOffset, [int]$OCCOffset)
 
     # Keep these base ports aligned with internal/plutonetwork/setup.go.
     $portBases = @(27656, 27757, 18545) # P2P, CometBFT RPC, Ethereum RPC
-    foreach ($offset in @($SequentialOffset, $ParallelOffset)) {
+    foreach ($offset in @($SequentialOffset, $OCCOffset)) {
         foreach ($basePort in $portBases) {
             for ($node = 0; $node -lt 4; $node++) {
                 if (-not (Test-PortAvailable ($basePort + $offset + $node))) { return $false }
@@ -49,23 +49,23 @@ function Test-ComparisonPortOffsets {
 # A small offset can overlap another service's range: e.g. P2P +100 is
 # 27756-27759, which collides with the default network's CometBFT RPC ports.
 $sequentialPortOffset = -1
-$parallelPortOffset = -1
+$occPortOffset = -1
 for ($candidate = 1000; $candidate -le 30000; $candidate += 20) {
-    if (Test-ComparisonPortOffsets -SequentialOffset $candidate -ParallelOffset ($candidate + 20)) {
+    if (Test-ComparisonPortOffsets -SequentialOffset $candidate -OCCOffset ($candidate + 20)) {
         $sequentialPortOffset = $candidate
-        $parallelPortOffset = $candidate + 20
+        $occPortOffset = $candidate + 20
         break
     }
 }
 if ($sequentialPortOffset -lt 0) {
     throw "Could not find two free four-validator port ranges for the comparison. Stop other Pluto test networks or free their ports, then retry."
 }
-Write-Host "Selected free port offsets: sequential=$sequentialPortOffset; parallel=$parallelPortOffset"
+Write-Host "Selected free port offsets: sequential=$sequentialPortOffset; OCC=$occPortOffset"
 
 Push-Location $repoRoot
 try {
     .\scripts\setup-pluto-network.ps1 -Root $sequentialRoot -PortOffset $sequentialPortOffset
-    .\scripts\setup-pluto-network.ps1 -Root $parallelRoot -PortOffset $parallelPortOffset
+    .\scripts\setup-pluto-network.ps1 -Root $occRoot -PortOffset $occPortOffset
 
     Write-Host "Running $Transactions transfers on a fresh four-validator sequential network..."
     .\scripts\start-pluto-network.ps1 -Root $sequentialRoot -Executor sequential -Workers 1
@@ -80,18 +80,18 @@ try {
     }
     .\scripts\stop-pluto-network.ps1 -Root $sequentialRoot
 
-    Write-Host "Running the same transfer count on a fresh four-validator parallel network..."
-    .\scripts\start-pluto-network.ps1 -Root $parallelRoot -Executor parallel -Workers auto
-    go run ./cmd/plutoload -root $parallelRoot -count $Transactions
-    if ($LASTEXITCODE -ne 0) { throw "Parallel mode warm-up failed with exit code $LASTEXITCODE" }
-    $parallelSamples = @()
+    Write-Host "Running the same transfer count on a fresh four-validator OCC network..."
+    .\scripts\start-pluto-network.ps1 -Root $occRoot -Executor occ -Workers auto
+    go run ./cmd/plutoload -root $occRoot -count $Transactions
+    if ($LASTEXITCODE -ne 0) { throw "OCC warm-up failed with exit code $LASTEXITCODE" }
+    $occSamples = @()
     for ($sample = 1; $sample -le $Samples; $sample++) {
-        $reportPath = Join-Path $absoluteComparisonRoot ("parallel-{0}.json" -f $sample)
-        go run ./cmd/plutoload -root $parallelRoot -count $Transactions -out $reportPath
-        if ($LASTEXITCODE -ne 0) { throw "Parallel mode sample $sample failed with exit code $LASTEXITCODE" }
-        $parallelSamples += Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+        $reportPath = Join-Path $absoluteComparisonRoot ("occ-{0}.json" -f $sample)
+        go run ./cmd/plutoload -root $occRoot -count $Transactions -out $reportPath
+        if ($LASTEXITCODE -ne 0) { throw "OCC sample $sample failed with exit code $LASTEXITCODE" }
+        $occSamples += Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
     }
-    .\scripts\stop-pluto-network.ps1 -Root $parallelRoot
+    .\scripts\stop-pluto-network.ps1 -Root $occRoot
 
     function Get-Median {
         param([double[]]$Values)
@@ -101,15 +101,15 @@ try {
         return ([double]$ordered[$middle - 1] + [double]$ordered[$middle]) / 2
     }
     $sequentialMillis = Get-Median @($sequentialSamples | ForEach-Object { [double]$_.elapsedMillis })
-    $parallelMillis = Get-Median @($parallelSamples | ForEach-Object { [double]$_.elapsedMillis })
+    $occMillis = Get-Median @($occSamples | ForEach-Object { [double]$_.elapsedMillis })
     $sequentialTPS = Get-Median @($sequentialSamples | ForEach-Object { [double]$_.transactionsPerSecond })
-    $parallelTPS = Get-Median @($parallelSamples | ForEach-Object { [double]$_.transactionsPerSecond })
-    $speedup = [Math]::Round(($sequentialMillis / [Math]::Max(1, $parallelMillis)), 3)
-    $change = [Math]::Round((($parallelTPS - $sequentialTPS) / [Math]::Max(0.0001, $sequentialTPS)) * 100, 2)
+    $occTPS = Get-Median @($occSamples | ForEach-Object { [double]$_.transactionsPerSecond })
+    $speedup = [Math]::Round(($sequentialMillis / [Math]::Max(1, $occMillis)), 3)
+    $change = [Math]::Round((($occTPS - $sequentialTPS) / [Math]::Max(0.0001, $sequentialTPS)) * 100, 2)
     $sequentialRetries = [double](Get-Median @($sequentialSamples | ForEach-Object { [double]$_.retries }))
-    $parallelRetries = [double](Get-Median @($parallelSamples | ForEach-Object { [double]$_.retries }))
+    $occRetries = [double](Get-Median @($occSamples | ForEach-Object { [double]$_.retries }))
     $sequentialWorkers = [string]$sequentialSamples[0].workers
-    $parallelWorkers = [string]$parallelSamples[0].workers
+    $occWorkers = [string]$occSamples[0].workers
     Write-Host ""
     Write-Host "Pluto validator network comparison (one warm-up + $Samples measured samples per mode; each mode used a fresh four-validator network)"
     [PSCustomObject]@{
@@ -117,19 +117,19 @@ try {
         MeasuredSamples = $Samples
         SequentialMedianSeconds = [Math]::Round($sequentialMillis / 1000, 3)
         SequentialMedianTPS = [Math]::Round($sequentialTPS, 2)
-        ParallelMedianSeconds = [Math]::Round($parallelMillis / 1000, 3)
-        ParallelMedianTPS = [Math]::Round($parallelTPS, 2)
-        ParallelSpeedup = "${speedup}x"
+        OCCMedianSeconds = [Math]::Round($occMillis / 1000, 3)
+        OCCMedianTPS = [Math]::Round($occTPS, 2)
+        OCCSpeedup = "${speedup}x"
         ThroughputChangePercent = $change
         SequentialMedianRetries = $sequentialRetries
-        ParallelMedianRetries = $parallelRetries
+        OCCMedianRetries = $occRetries
         SequentialWorkers = $sequentialWorkers
-        ParallelWorkers = $parallelWorkers
+        OCCWorkers = $occWorkers
     } | Format-List
     Write-Host "Raw JSON reports: $absoluteComparisonRoot"
 }
 finally {
     & (Join-Path $PSScriptRoot "stop-pluto-network.ps1") -Root $sequentialRoot
-    & (Join-Path $PSScriptRoot "stop-pluto-network.ps1") -Root $parallelRoot
+    & (Join-Path $PSScriptRoot "stop-pluto-network.ps1") -Root $occRoot
     Pop-Location
 }

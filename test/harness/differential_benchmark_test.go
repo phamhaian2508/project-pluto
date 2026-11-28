@@ -47,15 +47,17 @@ func BenchmarkDifferentialWorkloads(b *testing.B) {
 // BenchmarkSequentialVsParallelIndependentTransfers so sánh hai bộ máy trên
 // cùng workload hoàn toàn không giao nhau. Seed được cố định để tái lập kết quả.
 func BenchmarkSequentialVsParallelIndependentTransfers(b *testing.B) {
-	for _, txCount := range []int{128, 512, 1024} {
+	for _, txCount := range []int{32, 64, 128, 256, 512, 1024} {
 		b.Run(fmt.Sprintf("tx-%d", txCount), func(b *testing.B) {
 			workload := newIndependentTransferComparisonWorkload(b, txCount)
 			b.Run("sequential", func(b *testing.B) {
 				benchmarkExecutorBlockOnly(b, evm.NewSequentialExecutor(newChainConfig(), chainID), workload)
 			})
 			for _, workers := range []int{1, 2, 4, 8} {
-				b.Run(fmt.Sprintf("parallel-workers-%d", workers), func(b *testing.B) {
-					benchmarkExecutorBlockOnly(b, evm.NewParallelExecutor(newChainConfig(), chainID, workers), workload)
+				b.Run(fmt.Sprintf("occ-workers-%d", workers), func(b *testing.B) {
+					executor := evm.NewParallelExecutor(newChainConfig(), chainID, workers)
+					executor.SlidingWindow = true
+					benchmarkExecutorBlockOnly(b, executor, workload)
 				})
 			}
 		})

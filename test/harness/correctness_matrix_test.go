@@ -8,8 +8,9 @@ import (
 	"github.com/phamhaian2508/project-pluto/internal/evm"
 )
 
-// TestAllWorkloadsMatchSequentialParallelAndGeth tạo ma trận đối chiếu ngắn gọn
-// cho các workload hiện có trong differential harness.
+// TestAllWorkloadsMatchSequentialParallelAndGeth tạo ma trận đối chiếu các
+// workload với Sequential, OCC, Grouped, Predicted-OCC và Geth tích hợp.
+// Tên Parallel được giữ để các lệnh cũ trong tài liệu vẫn chạy được.
 func TestAllWorkloadsMatchSequentialParallelAndGeth(t *testing.T) {
 	cases := []struct {
 		name string
@@ -29,18 +30,24 @@ func TestAllWorkloadsMatchSequentialParallelAndGeth(t *testing.T) {
 	}
 
 	fmt.Fprintln(os.Stdout, "\nMA TRẬN KIỂM TRA TÍNH ĐÚNG ĐẮN")
-	fmt.Fprintln(os.Stdout, "Mỗi workload chạy trên Pluto tuần tự, Pluto song song auto, Pluto song song 4 worker và geth.")
-	fmt.Fprintln(os.Stdout, "PASS chỉ in khi kết quả giao dịch và state khớp; state root Pluto phải khớp tuần tự.")
+	fmt.Fprintln(os.Stdout, "Mỗi workload chạy trên Sequential, OCC auto, OCC 4 worker, Grouped, Predicted-OCC và Geth.")
+	fmt.Fprintln(os.Stdout, "PASS chỉ in khi các kết quả giao dịch và trạng thái được harness so sánh khớp.")
 	fmt.Fprintln(os.Stdout, "Trường hợp                            | Số giao dịch | Kết quả")
 
 	for _, testCase := range cases {
 		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
 			workload := testCase.make(t)
+			occAuto := evm.NewAdaptiveParallelExecutor(newChainConfig(), chainID, 0)
+			occAuto.SlidingWindow = true
+			occFixed := evm.NewParallelExecutor(newChainConfig(), chainID, 4)
+			occFixed.SlidingWindow = true
 			compareAllExecutors(t, workload,
-				namedExecutor{name: "Pluto sequential", ev: evm.NewSequentialExecutor(newChainConfig(), chainID)},
-				namedExecutor{name: "Pluto parallel auto", ev: evm.NewAdaptiveParallelExecutor(newChainConfig(), chainID, 0)},
-				namedExecutor{name: "Pluto parallel 4 workers", ev: evm.NewParallelExecutor(newChainConfig(), chainID, 4)},
+				namedExecutor{name: "Sequential", ev: evm.NewSequentialExecutor(newChainConfig(), chainID)},
+				namedExecutor{name: "OCC auto workers", ev: occAuto},
+				namedExecutor{name: "OCC 4 workers", ev: occFixed},
+				namedExecutor{name: "Grouped", ev: evm.NewGroupedExecutor(newChainConfig(), chainID, 4)},
+				namedExecutor{name: "Predicted-OCC", ev: evm.NewPredictedOCCExecutor(newChainConfig(), chainID, 4)},
 			)
 			fmt.Fprintf(os.Stdout, "%-36s | %6d | PASS\n", testCase.name, len(workload.transactions))
 		})

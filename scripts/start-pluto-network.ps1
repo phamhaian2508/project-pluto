@@ -1,7 +1,7 @@
 param(
     [string]$Root = ".pluto-network",
     [string]$Node = "",
-    [ValidateSet("sequential", "parallel", "occ", "grouped", "predicted-occ")][string]$Executor = "parallel",
+    [ValidateSet("sequential", "parallel", "occ", "grouped", "predicted-occ")][string]$Executor = "occ",
     [string]$Workers = "auto",
     [long]$ChainId = 0,
     [ValidateSet("", "off", "fixed", "history", "adaptive", "p0", "p1", "p2", "p3")][string]$Checkpoint = "",
@@ -21,6 +21,9 @@ $networkPath = Join-Path $rootPath "network.json"
 $manifestPath = Join-Path $rootPath "processes.json"
 $binaryDir = Join-Path $rootPath "bin"
 $binary = Join-Path $binaryDir "plutod.exe"
+
+# occ là tên chính thức; giữ parallel làm bí danh để không làm hỏng lệnh cũ.
+if ($Executor -eq "parallel") { $Executor = "occ" }
 
 if (-not (Test-Path -LiteralPath $networkPath -PathType Leaf)) {
     throw "Pluto validator network not found at $rootPath. Run .\scripts\setup-pluto-network.ps1 first."
